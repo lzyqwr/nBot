@@ -151,6 +151,7 @@ pub(super) async fn download_binary_to_temp(
 /// Download a remote image and convert it into a compact `data:` URL for multimodal chat.
 /// This is used by plugin `callLlmChat` so text-only plugins can still attach images reliably
 /// without depending on the provider to fetch remote URLs.
+#[allow(dead_code)]
 pub(in super::super::super) async fn download_and_prepare_image_data_url(
     url: &str,
     timeout_ms: u64,
@@ -170,6 +171,112 @@ pub(in super::super::super) async fn download_and_prepare_image_data_url(
     )
     .await?;
     Ok(data_url)
+}
+
+fn guess_file_name_from_url(url: &str) -> Option<String> {
+    let u = url.trim();
+    if u.is_empty() {
+        return None;
+    }
+    let without_query = u.split('?').next().unwrap_or(u);
+    let last = without_query
+        .rsplit('/')
+        .next()
+        .unwrap_or(without_query)
+        .trim();
+    if last.is_empty() {
+        None
+    } else {
+        Some(last.to_string())
+    }
+}
+
+fn sniff_binary_kind_prefix(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() >= 12 && bytes[0..4] == *b"RIFF" && bytes[8..12] == *b"WAVE" {
+        return Some("wav");
+    }
+    if bytes.len() >= 4 && bytes[0..4] == [0x1A, 0x45, 0xDF, 0xA3] {
+        return Some("webm");
+    }
+    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+        return Some("mp4");
+    }
+    if bytes.len() >= 4 && bytes[0..4] == *b"OggS" {
+        return Some("ogg");
+    }
+    if bytes.len() >= 4 && bytes[0..4] == *b"fLaC" {
+        return Some("flac");
+    }
+    if bytes.len() >= 3 && bytes[0..3] == *b"ID3" {
+        return Some("mp3");
+    }
+    if bytes.len() >= 2 && bytes[0] == 0xFF && (bytes[1] & 0xE0) == 0xE0 {
+        return Some("mp3");
+    }
+    None
+}
+
+async fn sniff_file_ext_from_path(path: &Path) -> Option<&'static str> {
+    use tokio::io::AsyncReadExt;
+    let mut f = tokio::fs::File::open(path).await.ok()?;
+    let mut buf = [0u8; 32];
+    let n = f.read(&mut buf).await.ok()?;
+    sniff_binary_kind_prefix(&buf[..n])
+}
+
+/// Best-effort: download a remote media URL and convert it to a `data:` URL suitable for multimodal chat.
+/// - If the file looks like an image, it will be re-encoded/compressed (same as `download_and_prepare_image_data_url`).
+/// - Otherwise, it will be embedded as-is via base64 (`data:video/*` or `data:audio/*` or octet-stream).
+pub(in super::super::super) async fn download_and_prepare_media_data_url(
+    url: &str,
+    timeout_ms: u64,
+    max_bytes: u64,
+    image_max_width: u32,
+    image_max_height: u32,
+    image_jpeg_quality: u8,
+    image_max_output_bytes: u64,
+) -> Result<String, String> {
+    let guess_name = guess_file_name_from_url(url);
+    let (guard, meta) =
+        download_binary_to_temp(url, guess_name.as_deref(), timeout_ms, max_bytes).await?;
+
+    // Try to treat it as an image first (fast path for screenshots).
+    if let Ok((data_url, _prepared)) = super::image::prepare_image_data_url(
+        &guard.path,
+        image_max_width,
+        image_max_height,
+        image_jpeg_quality,
+        image_max_output_bytes,
+    )
+    .await
+    {
+        return Ok(data_url);
+    }
+
+    let sniff_ext = sniff_file_ext_from_path(&guard.path).await;
+    let name = meta
+        .file_name
+        .clone()
+        .or_else(|| guess_name)
+        .unwrap_or_else(|| "media.bin".to_string());
+    let ext = meta
+        .file_ext
+        .clone()
+        .or_else(|| sniff_ext.map(|s| s.to_string()));
+
+    let mime_name = match ext.as_deref() {
+        Some("mp4") => "video.mp4".to_string(),
+        Some("webm") => "video.webm".to_string(),
+        Some("wav") => "audio.wav".to_string(),
+        Some("mp3") => "audio.mp3".to_string(),
+        Some("m4a") => "audio.m4a".to_string(),
+        Some("ogg") => "audio.ogg".to_string(),
+        Some("flac") => "audio.flac".to_string(),
+        Some(other) if !other.is_empty() => format!("file.{}", other),
+        _ => name,
+    };
+
+    read_file_as_data_url(&guard.path, &mime_name).await
 }
 
 pub(super) async fn get_record_base64_as_temp(
@@ -304,7 +411,10 @@ pub(in super::super::super) fn resolve_llm_config_by_name(
         .and_then(|v| v.as_str())
         .unwrap_or("");
     if provider_id.is_empty() || model_name.is_empty() {
-        return Err(format!("LLM 模块配置错误：模型 '{}' 字段不完整", target_model_name));
+        return Err(format!(
+            "LLM 模块配置错误：模型 '{}' 字段不完整",
+            target_model_name
+        ));
     }
 
     let provider = providers
@@ -468,7 +578,10 @@ async fn call_tavily_search(tavily_api_key: &str, query: &str) -> Result<String,
     if let Some(results) = v.get("results").and_then(|r| r.as_array()) {
         result.push_str("## 搜索结果\n\n");
         for (i, item) in results.iter().take(5).enumerate() {
-            let title = item.get("title").and_then(|t| t.as_str()).unwrap_or("无标题");
+            let title = item
+                .get("title")
+                .and_then(|t| t.as_str())
+                .unwrap_or("无标题");
             let url = item.get("url").and_then(|u| u.as_str()).unwrap_or("");
             let content = item
                 .get("content")
@@ -693,10 +806,7 @@ async fn call_with_tavily_tool_loop(
 
                         let args: serde_json::Value =
                             serde_json::from_str(arguments).unwrap_or(json!({}));
-                        let query = args
-                            .get("query")
-                            .and_then(|q| q.as_str())
-                            .unwrap_or("");
+                        let query = args.get("query").and_then(|q| q.as_str()).unwrap_or("");
 
                         info!("Tavily 搜索: {}", query);
 

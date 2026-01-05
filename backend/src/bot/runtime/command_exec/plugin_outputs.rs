@@ -17,14 +17,13 @@ use super::llm_forward::{
 
 /// 从 LLM 模块配置中获取 Tavily API key
 fn get_tavily_api_key(state: &SharedState, bot_id: &str) -> Option<String> {
-    crate::module::get_effective_module(state, bot_id, "llm")
-        .and_then(|m| {
-            m.config
-                .get("tavily_api_key")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string())
-        })
+    crate::module::get_effective_module(state, bot_id, "llm").and_then(|m| {
+        m.config
+            .get("tavily_api_key")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+    })
 }
 
 async fn begin_llm_task_guard(
@@ -63,7 +62,7 @@ async fn begin_llm_task_guard(
     }
 }
 
-async fn inline_multimodal_images_in_messages(
+async fn inline_multimodal_media_in_messages(
     messages: &mut Vec<serde_json::Value>,
     timeout_ms: u64,
     max_bytes: u64,
@@ -73,7 +72,7 @@ async fn inline_multimodal_images_in_messages(
     max_output_bytes: u64,
     max_images: usize,
 ) -> bool {
-    use super::llm_forward::multimodal::common::download_and_prepare_image_data_url;
+    use super::llm_forward::multimodal::common::download_and_prepare_media_data_url;
 
     let mut changed = false;
     let mut converted = 0usize;
@@ -115,7 +114,7 @@ async fn inline_multimodal_images_in_messages(
                 continue;
             }
 
-            match download_and_prepare_image_data_url(
+            match download_and_prepare_media_data_url(
                 url,
                 timeout_ms,
                 max_bytes,
@@ -558,7 +557,7 @@ pub(super) async fn process_plugin_outputs_with_llm_response(
                         Ok(llm) => {
                             // If the plugin provided multimodal image_url parts, inline them as data URLs.
                             let mut prepared_messages = messages.clone();
-                            let _ = inline_multimodal_images_in_messages(
+                            let _ = inline_multimodal_media_in_messages(
                                 &mut prepared_messages,
                                 30_000,
                                 50_000_000,
@@ -612,10 +611,7 @@ pub(super) async fn process_plugin_outputs_with_llm_response(
                         .await;
                     }
                     Err(e) => {
-                        warn!(
-                            "[{}] 插件 {} onLlmResponse 失败: {}",
-                            bot_id, plugin_id, e
-                        );
+                        warn!("[{}] 插件 {} onLlmResponse 失败: {}", bot_id, plugin_id, e);
                     }
                 }
             }
@@ -633,7 +629,7 @@ pub(super) async fn process_plugin_outputs_with_llm_response(
                     match resolve_llm_config_by_name(state, bot_id, model_to_use) {
                         Ok(llm) => {
                             let mut prepared_messages = messages.clone();
-                            let _ = inline_multimodal_images_in_messages(
+                            let _ = inline_multimodal_media_in_messages(
                                 &mut prepared_messages,
                                 30_000,
                                 50_000_000,
@@ -689,10 +685,7 @@ pub(super) async fn process_plugin_outputs_with_llm_response(
                         .await;
                     }
                     Err(e) => {
-                        warn!(
-                            "[{}] 插件 {} onLlmResponse 失败: {}",
-                            bot_id, plugin_id, e
-                        );
+                        warn!("[{}] 插件 {} onLlmResponse 失败: {}", bot_id, plugin_id, e);
                     }
                 }
             }
@@ -753,14 +746,7 @@ pub(super) async fn process_plugin_outputs_with_llm_response(
                     params["folder_id"] = json!(fid);
                 }
                 process_group_info_request(
-                    state,
-                    runtime,
-                    bot_id,
-                    plugin_id,
-                    request_id,
-                    "files",
-                    action,
-                    params,
+                    state, runtime, bot_id, plugin_id, request_id, "files", action, params,
                 )
                 .await;
             }
@@ -934,10 +920,7 @@ pub(super) async fn process_plugin_outputs_with_source(
                         .await;
                     }
                     Err(e) => {
-                        warn!(
-                            "[{}] 插件 {} onLlmResponse 失败: {}",
-                            bot_id, plugin_id, e
-                        );
+                        warn!("[{}] 插件 {} onLlmResponse 失败: {}", bot_id, plugin_id, e);
                     }
                 }
             }
@@ -999,10 +982,7 @@ pub(super) async fn process_plugin_outputs_with_source(
                         .await;
                     }
                     Err(e) => {
-                        warn!(
-                            "[{}] 插件 {} onLlmResponse 失败: {}",
-                            bot_id, plugin_id, e
-                        );
+                        warn!("[{}] 插件 {} onLlmResponse 失败: {}", bot_id, plugin_id, e);
                     }
                 }
             }
@@ -1063,14 +1043,7 @@ pub(super) async fn process_plugin_outputs_with_source(
                     params["folder_id"] = json!(fid);
                 }
                 process_group_info_request(
-                    state,
-                    runtime,
-                    bot_id,
-                    plugin_id,
-                    request_id,
-                    "files",
-                    action,
-                    params,
+                    state, runtime, bot_id, plugin_id, request_id, "files", action, params,
                 )
                 .await;
             }
@@ -1150,7 +1123,10 @@ async fn process_group_info_request(
         Some(resp) => {
             if resp.get("status").and_then(|s| s.as_str()) == Some("ok") {
                 let data = resp.get("data").cloned().unwrap_or(json!(null));
-                (true, serde_json::to_string(&data).unwrap_or_else(|_| "null".to_string()))
+                (
+                    true,
+                    serde_json::to_string(&data).unwrap_or_else(|_| "null".to_string()),
+                )
             } else {
                 let msg = resp
                     .get("message")

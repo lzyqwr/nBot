@@ -1,5 +1,5 @@
 /**
- * nBot Smart Assistant Plugin v2.2.18
+ * nBot Smart Assistant Plugin v2.2.19
  * Auto-detects if user needs help, enters multi-turn conversation mode,
  * supports web search, generates analysis report via forward message
  *
@@ -40,6 +40,10 @@ const DECISION_BATCH_MAX_ITEMS = 8;
 // Recent images (help the model resolve "the image above")
 const recentGroupImages = new Map(); // Map<groupId, { t:number, urls:string[] }>
 const recentUserImages = new Map(); // Map<sessionKey, { t:number, urls:string[] }>
+const recentGroupVideos = new Map(); // Map<groupId, { t:number, urls:string[] }>
+const recentUserVideos = new Map(); // Map<sessionKey, { t:number, urls:string[] }>
+const recentGroupRecords = new Map(); // Map<groupId, { t:number, urls:string[] }>
+const recentUserRecords = new Map(); // Map<sessionKey, { t:number, urls:string[] }>
 
 // Request ID counter
 let requestIdCounter = 0;
@@ -239,6 +243,52 @@ function extractImageUrlsFromCtx(ctx) {
   return [...new Set(urls)].slice(0, 4);
 }
 
+function extractVideoUrlsFromCtx(ctx) {
+  const urls = [];
+  if (ctx && Array.isArray(ctx.message)) {
+    for (const seg of ctx.message) {
+      if (!seg || seg.type !== "video") continue;
+      const u = seg.data && seg.data.url !== undefined ? String(seg.data.url).trim() : "";
+      if (u) urls.push(decodeHtmlEntities(u));
+    }
+  }
+
+  const raw = ctx ? String(ctx.raw_message || "") : "";
+  if (raw && raw.includes("[CQ:video")) {
+    const re = /\[CQ:video,[^\]]*?\burl=([^\],]+)[^\]]*\]/gi;
+    let m;
+    while ((m = re.exec(raw))) {
+      const u = m[1] ? decodeHtmlEntities(String(m[1]).trim()) : "";
+      if (u) urls.push(u);
+    }
+  }
+
+  return [...new Set(urls)].filter((u) => /^https?:\/\//i.test(String(u || ""))).slice(0, 2);
+}
+
+function extractRecordUrlsFromCtx(ctx) {
+  const urls = [];
+  if (ctx && Array.isArray(ctx.message)) {
+    for (const seg of ctx.message) {
+      if (!seg || seg.type !== "record") continue;
+      const u = seg.data && seg.data.url !== undefined ? String(seg.data.url).trim() : "";
+      if (u) urls.push(decodeHtmlEntities(u));
+    }
+  }
+
+  const raw = ctx ? String(ctx.raw_message || "") : "";
+  if (raw && raw.includes("[CQ:record")) {
+    const re = /\[CQ:record,[^\]]*?\burl=([^\],]+)[^\]]*\]/gi;
+    let m;
+    while ((m = re.exec(raw))) {
+      const u = m[1] ? decodeHtmlEntities(String(m[1]).trim()) : "";
+      if (u) urls.push(u);
+    }
+  }
+
+  return [...new Set(urls)].filter((u) => /^https?:\/\//i.test(String(u || ""))).slice(0, 2);
+}
+
 function noteRecentGroupImages(groupId, urls) {
   const gid = Number(groupId);
   if (!gid || !Array.isArray(urls) || urls.length === 0) return;
@@ -248,6 +298,28 @@ function noteRecentGroupImages(groupId, urls) {
 function noteRecentUserImages(sessionKey, urls) {
   if (!sessionKey || !Array.isArray(urls) || urls.length === 0) return;
   recentUserImages.set(String(sessionKey), { t: nbot.now(), urls: urls.slice(0, 4) });
+}
+
+function noteRecentGroupVideos(groupId, urls) {
+  const gid = Number(groupId);
+  if (!gid || !Array.isArray(urls) || urls.length === 0) return;
+  recentGroupVideos.set(gid, { t: nbot.now(), urls: urls.slice(0, 2) });
+}
+
+function noteRecentUserVideos(sessionKey, urls) {
+  if (!sessionKey || !Array.isArray(urls) || urls.length === 0) return;
+  recentUserVideos.set(String(sessionKey), { t: nbot.now(), urls: urls.slice(0, 2) });
+}
+
+function noteRecentGroupRecords(groupId, urls) {
+  const gid = Number(groupId);
+  if (!gid || !Array.isArray(urls) || urls.length === 0) return;
+  recentGroupRecords.set(gid, { t: nbot.now(), urls: urls.slice(0, 2) });
+}
+
+function noteRecentUserRecords(sessionKey, urls) {
+  if (!sessionKey || !Array.isArray(urls) || urls.length === 0) return;
+  recentUserRecords.set(String(sessionKey), { t: nbot.now(), urls: urls.slice(0, 2) });
 }
 
 function looksReferentialShortQuestion(text) {
@@ -287,7 +359,7 @@ function buildMultimodalImageMessage(imageUrls) {
   return {
     role: "user",
     content: [
-      { type: "text", text: "参考图片（来自群聊最近一张/几张图，仅用于理解当前问题，不要回复这句话）：" },
+      { type: "text", text: "参考附件（仅用于理解当前问题，不要回复这句话）：" },
       ...urls.slice(0, 2).map((url) => ({ type: "image_url", image_url: { url: String(url) } })),
     ],
   };
@@ -311,6 +383,54 @@ function getRelevantImageUrlsForSession(session, sessionKey) {
 
   const gid = session && session.groupId ? Number(session.groupId) : 0;
   const recent = gid ? recentGroupImages.get(gid) : null;
+  if (recent && Array.isArray(recent.urls) && recent.urls.length && now - Number(recent.t || 0) <= 2 * 60 * 1000) {
+    return recent.urls;
+  }
+  return [];
+}
+
+function getRelevantVideoUrlsForSession(session, sessionKey) {
+  const now = nbot.now();
+  const fromSession =
+    session &&
+    Array.isArray(session.lastVideoUrls) &&
+    session.lastVideoUrls.length > 0 &&
+    now - Number(session.lastMediaAt || 0) <= 2 * 60 * 1000
+      ? session.lastVideoUrls
+      : [];
+  if (fromSession.length) return fromSession;
+
+  const fromUser = sessionKey ? recentUserVideos.get(String(sessionKey)) : null;
+  if (fromUser && Array.isArray(fromUser.urls) && fromUser.urls.length && now - Number(fromUser.t || 0) <= 2 * 60 * 1000) {
+    return fromUser.urls;
+  }
+
+  const gid = session && session.groupId ? Number(session.groupId) : 0;
+  const recent = gid ? recentGroupVideos.get(gid) : null;
+  if (recent && Array.isArray(recent.urls) && recent.urls.length && now - Number(recent.t || 0) <= 2 * 60 * 1000) {
+    return recent.urls;
+  }
+  return [];
+}
+
+function getRelevantRecordUrlsForSession(session, sessionKey) {
+  const now = nbot.now();
+  const fromSession =
+    session &&
+    Array.isArray(session.lastRecordUrls) &&
+    session.lastRecordUrls.length > 0 &&
+    now - Number(session.lastMediaAt || 0) <= 2 * 60 * 1000
+      ? session.lastRecordUrls
+      : [];
+  if (fromSession.length) return fromSession;
+
+  const fromUser = sessionKey ? recentUserRecords.get(String(sessionKey)) : null;
+  if (fromUser && Array.isArray(fromUser.urls) && fromUser.urls.length && now - Number(fromUser.t || 0) <= 2 * 60 * 1000) {
+    return fromUser.urls;
+  }
+
+  const gid = session && session.groupId ? Number(session.groupId) : 0;
+  const recent = gid ? recentGroupRecords.get(gid) : null;
   if (recent && Array.isArray(recent.urls) && recent.urls.length && now - Number(recent.t || 0) <= 2 * 60 * 1000) {
     return recent.urls;
   }
@@ -364,6 +484,7 @@ function sanitizeMessageForLlm(text, ctx) {
     .replace(/\[CQ:image,[^\]]*\]/g, "[图片]")
     .replace(/\[CQ:video,[^\]]*\]/g, "[视频]")
     .replace(/\[CQ:record,[^\]]*\]/g, "[语音]")
+    .replace(/\[CQ:file,[^\]]*\]/g, "[文件]")
     .replace(/\[CQ:(?:xml|json),[^\]]*\]/g, "[卡片]")
     .replace(/\[CQ:[^\]]+\]/g, " ")
     .replace(/\s+/g, " ")
@@ -518,6 +639,9 @@ function createSession(sessionKey, userId, groupId, initialMessage, options = {}
     mentionUserOnFirstReply: !!options.mentionUserOnFirstReply,
     lastImageUrls: [],
     lastImageAt: 0,
+    lastVideoUrls: [],
+    lastRecordUrls: [],
+    lastMediaAt: 0,
   };
   sessions.set(sessionKey, session);
   return session;
@@ -755,15 +879,25 @@ function buildReplyMessages(session, sessionKey, config, attachImages) {
   }
 
   if (attachImages) {
-    const shouldAttachImage =
+    const shouldAttachMedia =
       looksReferentialShortQuestion(lastUserMsg) ||
       String(lastUserMsg).includes("[图片]") ||
-      (session.lastImageAt && nbot.now() - Number(session.lastImageAt || 0) <= 15 * 1000);
-    const imageUrls = shouldAttachImage ? getRelevantImageUrlsForSession(session, sessionKey) : [];
-    const httpImageUrls = imageUrls.filter((u) => /^https?:\/\//i.test(String(u || ""))).slice(0, 2);
-    if (httpImageUrls.length) {
-      const mm = buildMultimodalImageMessage(httpImageUrls);
-      if (mm) messages.push(mm);
+      String(lastUserMsg).includes("[视频]") ||
+      String(lastUserMsg).includes("[语音]") ||
+      String(lastUserMsg).includes("[文件]") ||
+      (session.lastMediaAt && nbot.now() - Number(session.lastMediaAt || 0) <= 15 * 1000);
+
+    if (shouldAttachMedia) {
+      const imageUrls = getRelevantImageUrlsForSession(session, sessionKey)
+        .filter((u) => /^https?:\/\//i.test(String(u || "")))
+        .slice(0, 2);
+      const videoUrls = getRelevantVideoUrlsForSession(session, sessionKey).slice(0, 1);
+      const recordUrls = getRelevantRecordUrlsForSession(session, sessionKey).slice(0, 1);
+      const urls = [...imageUrls, ...videoUrls, ...recordUrls].filter(Boolean).slice(0, 4);
+      if (urls.length) {
+        const mm = buildMultimodalImageMessage(urls);
+        if (mm) messages.push(mm);
+      }
     }
   }
 
@@ -1405,12 +1539,30 @@ return {
       const llmMessage = sanitizeMessageForLlm(message, ctx);
       const mentions = summarizeMentions(ctx);
       const imageUrls = extractImageUrlsFromCtx(ctx);
+      const videoUrls = extractVideoUrlsFromCtx(ctx);
+      const recordUrls = extractRecordUrlsFromCtx(ctx);
       if (imageUrls.length) {
         noteRecentGroupImages(group_id, imageUrls);
         noteRecentUserImages(sessionKey, imageUrls);
         if (session) {
           session.lastImageUrls = imageUrls;
           session.lastImageAt = nbot.now();
+        }
+      }
+      if (videoUrls.length) {
+        noteRecentGroupVideos(group_id, videoUrls);
+        noteRecentUserVideos(sessionKey, videoUrls);
+        if (session) {
+          session.lastVideoUrls = videoUrls;
+          session.lastMediaAt = nbot.now();
+        }
+      }
+      if (recordUrls.length) {
+        noteRecentGroupRecords(group_id, recordUrls);
+        noteRecentUserRecords(sessionKey, recordUrls);
+        if (session) {
+          session.lastRecordUrls = recordUrls;
+          session.lastMediaAt = nbot.now();
         }
       }
 
