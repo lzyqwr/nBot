@@ -63,6 +63,89 @@ async fn begin_llm_task_guard(
     }
 }
 
+async fn inline_multimodal_images_in_messages(
+    messages: &mut Vec<serde_json::Value>,
+    timeout_ms: u64,
+    max_bytes: u64,
+    max_width: u32,
+    max_height: u32,
+    jpeg_quality: u8,
+    max_output_bytes: u64,
+    max_images: usize,
+) -> bool {
+    use super::llm_forward::multimodal::common::download_and_prepare_image_data_url;
+
+    let mut changed = false;
+    let mut converted = 0usize;
+
+    for msg in messages.iter_mut() {
+        if converted >= max_images {
+            break;
+        }
+        let Some(content) = msg.get_mut("content") else {
+            continue;
+        };
+        let Some(parts) = content.as_array_mut() else {
+            continue;
+        };
+        for part in parts.iter_mut() {
+            if converted >= max_images {
+                break;
+            }
+            let part_type = part
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if part_type != "image_url" {
+                continue;
+            }
+            let Some(url) = part
+                .get("image_url")
+                .and_then(|v| v.get("url"))
+                .and_then(|v| v.as_str())
+            else {
+                continue;
+            };
+
+            let url = url.trim();
+            if url.starts_with("data:") {
+                continue;
+            }
+            if !(url.starts_with("http://") || url.starts_with("https://")) {
+                continue;
+            }
+
+            match download_and_prepare_image_data_url(
+                url,
+                timeout_ms,
+                max_bytes,
+                max_width,
+                max_height,
+                jpeg_quality,
+                max_output_bytes,
+            )
+            .await
+            {
+                Ok(data_url) => {
+                    if let Some(obj) = part.as_object_mut() {
+                        if let Some(img) = obj.get_mut("image_url").and_then(|v| v.as_object_mut())
+                        {
+                            img.insert("url".to_string(), serde_json::Value::String(data_url));
+                            changed = true;
+                            converted += 1;
+                        }
+                    }
+                }
+                Err(_e) => {
+                    // Best-effort: keep original URL if conversion failed.
+                }
+            }
+        }
+    }
+
+    changed
+}
+
 /// 处理插件输出
 pub(super) async fn process_plugin_outputs(
     state: &SharedState,
@@ -473,10 +556,23 @@ pub(super) async fn process_plugin_outputs_with_llm_response(
                 let (success, content) =
                     match resolve_llm_config_by_name(state, bot_id, model_name.as_deref()) {
                         Ok(llm) => {
+                            // If the plugin provided multimodal image_url parts, inline them as data URLs.
+                            let mut prepared_messages = messages.clone();
+                            let _ = inline_multimodal_images_in_messages(
+                                &mut prepared_messages,
+                                30_000,
+                                50_000_000,
+                                1024,
+                                1024,
+                                80,
+                                600_000,
+                                2,
+                            )
+                            .await;
                             // 构建请求
                             let mut request_body = json!({
                                 "model": llm.model_name,
-                                "messages": messages,
+                                "messages": prepared_messages,
                             });
                             if let Some(max_tok) = max_tokens {
                                 request_body["max_tokens"] = json!(max_tok);
@@ -536,10 +632,22 @@ pub(super) async fn process_plugin_outputs_with_llm_response(
                 let (success, content) =
                     match resolve_llm_config_by_name(state, bot_id, model_to_use) {
                         Ok(llm) => {
+                            let mut prepared_messages = messages.clone();
+                            let _ = inline_multimodal_images_in_messages(
+                                &mut prepared_messages,
+                                30_000,
+                                50_000_000,
+                                1024,
+                                1024,
+                                80,
+                                600_000,
+                                2,
+                            )
+                            .await;
                             // 构建请求
                             let mut request_body = json!({
                                 "model": llm.model_name,
-                                "messages": messages,
+                                "messages": prepared_messages,
                             });
                             if let Some(max_tok) = max_tokens {
                                 request_body["max_tokens"] = json!(max_tok);

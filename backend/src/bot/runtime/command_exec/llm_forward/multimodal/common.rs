@@ -148,6 +148,30 @@ pub(super) async fn download_binary_to_temp(
     Ok((guard, meta))
 }
 
+/// Download a remote image and convert it into a compact `data:` URL for multimodal chat.
+/// This is used by plugin `callLlmChat` so text-only plugins can still attach images reliably
+/// without depending on the provider to fetch remote URLs.
+pub(in super::super::super) async fn download_and_prepare_image_data_url(
+    url: &str,
+    timeout_ms: u64,
+    max_bytes: u64,
+    max_width: u32,
+    max_height: u32,
+    jpeg_quality: u8,
+    max_output_bytes: u64,
+) -> Result<String, String> {
+    let (guard, _meta) = download_binary_to_temp(url, None, timeout_ms, max_bytes).await?;
+    let (data_url, _prepared) = super::image::prepare_image_data_url(
+        &guard.path,
+        max_width,
+        max_height,
+        jpeg_quality,
+        max_output_bytes,
+    )
+    .await?;
+    Ok(data_url)
+}
+
 pub(super) async fn get_record_base64_as_temp(
     runtime: &Arc<BotRuntime>,
     bot_id: &str,

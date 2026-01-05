@@ -1,5 +1,5 @@
 /**
- * nBot Smart Assistant Plugin v2.2.9
+ * nBot Smart Assistant Plugin v2.2.17
  * Auto-detects if user needs help, enters multi-turn conversation mode,
  * supports web search, generates analysis report via forward message
  *
@@ -37,32 +37,16 @@ const pendingReportSessions = new Set();
 const decisionBatches = new Map(); // Map<sessionKey, { userId:number, groupId:number, items: {t:number,text:string,mentioned:boolean}[] }>
 const DECISION_BATCH_MAX_ITEMS = 8;
 
+// Recent images (help the model resolve "the image above")
+const recentGroupImages = new Map(); // Map<groupId, { t:number, urls:string[] }>
+const recentUserImages = new Map(); // Map<sessionKey, { t:number, urls:string[] }>
+
 // Request ID counter
 let requestIdCounter = 0;
 
 // Generate unique request ID
 function genRequestId(type) {
   return `smart-assist-${type}-${++requestIdCounter}-${nbot.now()}`;
-}
-
-function isGreetingOnly(text) {
-  const t = String(text || "")
-    .trim()
-    .replace(/[!?！？。,.，…\s]/g, "")
-    .toLowerCase();
-  if (!t) return true;
-  return (
-    t === "hi" ||
-    t === "hello" ||
-    t === "在吗" ||
-    t === "在不在" ||
-    t === "在不" ||
-    t === "你好" ||
-    t === "您好" ||
-    t === "哈喽" ||
-    t === "嗨" ||
-    t === "?"
-  );
 }
 
 // Get config
@@ -85,6 +69,9 @@ function getConfig() {
       "重要：要非常保守，避免误触发。",
       "- 只要像玩笑/吐槽/阴阳怪气/反讽/自问自答/口头禅、或没有明确问题与需求，一律判定 NO。",
       "- 被 @ 机器人只是“优先级更高”的信号，仍然可以判定 NO。",
+      "- 只有媒体/占位符（如“[图片] / [视频] / [语音] / [卡片]”）且没有任何文字内容，一律判定 NO（不要去‘说明无法判断’）。",
+      "- 只有表情/颜文字/一个词/无意义应答（如“哈哈”“？”“。。。”）一律判定 NO。",
+      "- 用户在 @ 其他人（而不是 @ 机器人）时，通常是在找那个人说话：除非明确要求机器人回答，否则判定 NO。",
       "",
       "请输出严格 JSON（不要 Markdown、不要解释文本）：",
       '{"decision":"YES|NO","confidence":0.0,"reason":"<=20字中文"}',
@@ -93,7 +80,7 @@ function getConfig() {
       "decision=YES 的条件（同时满足）：",
       "1) 明确在求助/提问/请求排查/要方案/要解释；且",
       "2) 用户期待机器人回答（不是玩笑、不是随口一句）；且",
-      "3) 你对判断非常有把握：只有在 confidence >= 0.80 时才允许输出 YES，否则输出 NO。",
+      "3) 你对判断非常有把握：只有在你非常确定时才允许输出 YES，否则输出 NO。",
     ].join("\n");
 
   const replySystemPrompt =
@@ -102,11 +89,14 @@ function getConfig() {
       "你是群聊中的智能助手。目标：给出针对性的可执行帮助，并且尽量少打扰。",
       "",
       "要求：",
-      "- 用中文回答，简洁、具体。",
+      "- 用中文回答，像真人群友一样简短。",
       "- 这是 QQ 群聊：只输出【一行】纯文本（不要换行），不要 Markdown（不要列表/加粗/代码块/反引号）。",
-      "- 最多问 1 个关键澄清问题；优先让对方直接贴“报错全文/截图/日志”。",
+      "- 长度控制：尽量不超过 60 个中文字符；最多 2 句但必须同一行。",
+      "- 最多问 1 个关键澄清问题；优先让对方直接贴“报错全文/截图/日志”。不要罗列多个问题/清单。",
       "- 如果只是打招呼/玩笑/吐槽/闲聊，不要进入长对话，最多一句话带过或不介入。",
-      "- 信息不足时先问 1-2 个关键澄清问题；信息足够则直接给步骤化方案。",
+      "- 信息不足时先问 1 个关键点；信息足够则给一个最可能有效的下一步。",
+      "- 不要用客服腔/长解释（例如“无法直接判断/需要额外信息/请提供以下几点”这类话术）。",
+      "- 不要连续道歉；尽量不要用“抱歉”。如果看不到图，就一句话说“看不到图，贴下日志/报错文字”。",
       "- 不要输出任何 QQ 号/ID/Token/密钥。",
       "- 不要在内容里自己写“@某某”，@ 由系统在必要时自动添加。",
       "- 如果用户是在开玩笑或不需要帮助，礼貌简短地不介入或反问确认。",
@@ -152,7 +142,13 @@ function getConfig() {
       "你好，我注意到你可能需要帮助。\n\n剩余对话次数：{remaining}\n\n请在对话次数内向我描述清楚你的问题。\n\n如果你已经明白了，可以回复「我明白了」来结束对话。\n如果你已经说完了，可以回复「这就是我想说的」来提前生成分析报告。",
     botName: cfg.bot_name || "智能助手",
     fetchGroupContext: cfg.fetch_group_context !== false,
-    contextMessageCount: cfg.context_message_count || 20,
+    contextMessageCount: (() => {
+      const v = Number(cfg.context_message_count ?? 20);
+      if (!Number.isFinite(v)) return 20;
+      return Math.max(5, Math.min(100, Math.floor(v)));
+    })(),
+    // Keep formatting limits internal; don't rely on config for behavior.
+    replyMaxChars: 100,
   };
 }
 
@@ -214,6 +210,143 @@ function stripAllCqSegments(text) {
     .replace(/\[CQ:[^\]]+\]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function decodeHtmlEntities(s) {
+  return String(s || "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
+function extractImageUrlsFromCtx(ctx) {
+  const urls = [];
+  if (ctx && Array.isArray(ctx.message)) {
+    for (const seg of ctx.message) {
+      if (!seg || seg.type !== "image") continue;
+      const u = seg.data && seg.data.url !== undefined ? String(seg.data.url).trim() : "";
+      if (u) urls.push(decodeHtmlEntities(u));
+    }
+  }
+
+  const raw = ctx ? String(ctx.raw_message || "") : "";
+  if (raw && raw.includes("[CQ:image")) {
+    const re = /\[CQ:image,[^\]]*?\burl=([^\],]+)[^\]]*\]/gi;
+    let m;
+    while ((m = re.exec(raw))) {
+      const u = m[1] ? decodeHtmlEntities(String(m[1]).trim()) : "";
+      if (u) urls.push(u);
+    }
+  }
+
+  // de-dup, keep order
+  return [...new Set(urls)].slice(0, 4);
+}
+
+function noteRecentGroupImages(groupId, urls) {
+  const gid = Number(groupId);
+  if (!gid || !Array.isArray(urls) || urls.length === 0) return;
+  recentGroupImages.set(gid, { t: nbot.now(), urls: urls.slice(0, 4) });
+}
+
+function noteRecentUserImages(sessionKey, urls) {
+  if (!sessionKey || !Array.isArray(urls) || urls.length === 0) return;
+  recentUserImages.set(String(sessionKey), { t: nbot.now(), urls: urls.slice(0, 4) });
+}
+
+function looksLikeHelpRequest(text) {
+  const t = stripAllCqSegments(String(text || "")).trim();
+  if (!t) return false;
+
+  // Avoid running the decision model on obvious chit-chat noise.
+  if (t.length <= 2) return /[?？]/.test(t);
+
+  const hasQuestionMark = /[?？]/.test(t);
+  const hasQuestionParticles = /(?:吗|么|咋|咩|捏)\s*$/u.test(t);
+  const hasAskWord = /(?:怎么|为何|为什么|咋办|怎么办|求助|帮(?:帮|忙)?|救救|有人懂|谁能|请问|能不能)/u.test(t);
+  const hasProblemWord =
+    /(?:报错|错误|异常|崩溃|闪退|打不开|开不起来|登录|扫码|安装|部署|配置|无法|不能|不行|失败|卡住|连不上|没反应)/u.test(
+      t
+    );
+
+  const score =
+    (hasQuestionMark || hasQuestionParticles ? 1 : 0) +
+    (hasAskWord ? 1 : 0) +
+    (hasProblemWord ? 1 : 0);
+  if (score >= 2) return true;
+
+  // Explicit "求助/救命" without a question mark.
+  if (!hasQuestionMark && /(?:求助|救命|谁能帮)/u.test(t) && (hasProblemWord || t.length >= 8)) {
+    return true;
+  }
+
+  return false;
+}
+
+function looksReferentialShortQuestion(text) {
+  const t = stripAllCqSegments(String(text || "")).trim();
+  if (!t) return false;
+  if (t.length > 20) return false;
+  return /(?:这个|那个|上面|刚才|这张|那张|啥|什么|哪个|哪款|哪套|什么意思|怎么弄)/u.test(t);
+}
+
+function buildRecentGroupSnippet(groupContext, limit = 15) {
+  if (!groupContext || !Array.isArray(groupContext.history) || groupContext.history.length === 0) return "";
+  const maxLines = Number.isFinite(limit) ? Math.max(3, Math.min(50, Math.floor(limit))) : 15;
+
+  const lines = [];
+  const slice = groupContext.history.slice(0, maxLines).slice();
+  const timed = slice.filter((m) => Number.isFinite(Number(m?.time))).length;
+  if (timed >= Math.ceil(slice.length / 2)) {
+    slice.sort((a, b) => Number(a?.time || 0) - Number(b?.time || 0));
+  }
+  for (const m of slice) {
+    const sender = m?.sender || {};
+    const name = String(sender.card || sender.nickname || "群友").replace(/\s+/g, " ").trim() || "群友";
+    const content = sanitizeMessageForLlm(String(m?.raw_message || ""), null);
+    if (!content) continue;
+    lines.push(`${name}: ${content.slice(0, 120)}`);
+  }
+  if (!lines.length) return "";
+  return `【最近群聊片段】\n${lines.join("\n")}`.trim();
+}
+
+function buildMultimodalImageMessage(imageUrls) {
+  const urls = Array.isArray(imageUrls) ? imageUrls.filter(Boolean) : [];
+  if (!urls.length) return null;
+  return {
+    role: "user",
+    content: [
+      { type: "text", text: "参考图片（来自群聊最近一张/几张图，仅用于理解当前问题，不要回复这句话）：" },
+      ...urls.slice(0, 2).map((url) => ({ type: "image_url", image_url: { url: String(url) } })),
+    ],
+  };
+}
+
+function getRelevantImageUrlsForSession(session, sessionKey) {
+  const now = nbot.now();
+  const fromSession =
+    session &&
+    Array.isArray(session.lastImageUrls) &&
+    session.lastImageUrls.length > 0 &&
+    now - Number(session.lastImageAt || 0) <= 2 * 60 * 1000
+      ? session.lastImageUrls
+      : [];
+  if (fromSession.length) return fromSession;
+
+  const fromUser = sessionKey ? recentUserImages.get(String(sessionKey)) : null;
+  if (fromUser && Array.isArray(fromUser.urls) && fromUser.urls.length && now - Number(fromUser.t || 0) <= 2 * 60 * 1000) {
+    return fromUser.urls;
+  }
+
+  const gid = session && session.groupId ? Number(session.groupId) : 0;
+  const recent = gid ? recentGroupImages.get(gid) : null;
+  if (recent && Array.isArray(recent.urls) && recent.urls.length && now - Number(recent.t || 0) <= 2 * 60 * 1000) {
+    return recent.urls;
+  }
+  return [];
 }
 
 function summarizeMentions(ctx) {
@@ -281,12 +414,8 @@ function getDecisionTrigger(ctx, message, config) {
   if (firstToken === "ai分析") return empty;
 
   const mentions = summarizeMentions(ctx);
-  // Human-like: if the user is explicitly @ someone else (and not @ bot), we assume they're talking to that person.
-  // Avoid jumping into conversations that aren't addressed to the assistant.
-  if (mentions.other && !mentions.bot) return empty;
-
   const mentioned = mentions.bot || isMentioningBot(ctx);
-  // Fully delegate "should reply" decision to the decision LLM.
+  // Delegate the trigger decision to the LLM: always check (merged in 5s window to reduce cost).
   const shouldCheck = true;
   return { shouldCheck, mentioned, urgent: mentioned };
 }
@@ -419,6 +548,8 @@ function createSession(sessionKey, userId, groupId, initialMessage, options = {}
     groupContext: null, // Will be populated with group announcements and history
     needsReply: false,
     mentionUserOnFirstReply: !!options.mentionUserOnFirstReply,
+    lastImageUrls: [],
+    lastImageAt: 0,
   };
   sessions.set(sessionKey, session);
   return session;
@@ -520,6 +651,17 @@ function callDecisionModel(sessionKey, userId, groupId, message, mentioned, item
         contextInfo += "(未匹配到该用户的历史发言)\n";
       }
     }
+    const groupSnippet = buildRecentGroupSnippet(groupContext, 12);
+    if (groupSnippet) {
+      contextInfo += `\n\n${groupSnippet}\n`;
+    }
+  }
+  const recent = recentGroupImages.get(Number(groupId));
+  if (recent && Array.isArray(recent.urls) && recent.urls.length && nbot.now() - Number(recent.t || 0) <= 2 * 60 * 1000) {
+    contextInfo += "\n\n【最近图片URL】\n";
+    recent.urls.slice(0, 2).forEach((u, i) => {
+      contextInfo += `${i + 1}. ${String(u).slice(0, 200)}\n`;
+    });
   }
 
   const messages = [
@@ -549,13 +691,13 @@ function buildReplyContextForPrompt(groupContext, userId) {
     const uidStr = String(userId);
     const userMessages = groupContext.history
       .filter(m => String(m?.sender?.user_id ?? "") === uidStr)
-      .slice(0, 8);
+      .slice(0, 5);
     if (userMessages.length) {
       contextInfo += "【该用户近期群内发言】\n";
       userMessages.forEach((m, i) => {
         const content = stripAllCqSegments(m.raw_message || "");
         if (content) {
-          contextInfo += `${i + 1}. ${content.substring(0, 120)}\n`;
+          contextInfo += `${i + 1}. ${content.substring(0, 80)}\n`;
         }
       });
       contextInfo += "\n";
@@ -574,6 +716,8 @@ function formatOneLinePlain(text, maxChars = 160) {
     .replace(/`+/g, "")
     .replace(/\*\*+/g, "")
     .replace(/__+/g, "")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1") // markdown links
+    .replace(/<\/?[^>]+>/g, " ") // html tags
     .replace(/#+\s*/g, "")
     .replace(/^\s*>+\s*/gm, "")
     .replace(/^\s*[-*+]\s+/gm, "")
@@ -590,6 +734,27 @@ function formatOneLinePlain(text, maxChars = 160) {
   // Final whitespace cleanup.
   s = s.replace(/\s+/g, " ").trim();
 
+  // Drop leading greetings; @ is handled by the framework.
+  s = s.replace(/^(?:你好|您好|哈喽|嗨|在吗|在不在)\s*[!！。]?\s*/u, "");
+
+  // Prefer the first helpful sentence when output is overly long.
+  if (s.length > maxChars) {
+    // Avoid returning just a greeting.
+    const cutCandidates = ["。", "！", "？", "!", "?", "；", ";"];
+    let cutAt = -1;
+    for (const p of cutCandidates) {
+      const idx = s.indexOf(p);
+      if (idx !== -1) {
+        cutAt = idx + 1;
+        // If the first sentence is too short, keep searching.
+        if (cutAt >= 10) break;
+      }
+    }
+    if (cutAt !== -1 && cutAt <= maxChars) {
+      s = s.slice(0, cutAt).trim();
+    }
+  }
+
   if (s.length > maxChars) {
     s = s.slice(0, maxChars).trimEnd();
   }
@@ -597,28 +762,62 @@ function formatOneLinePlain(text, maxChars = 160) {
 }
 
 // Call reply model
+function buildReplyMessages(session, sessionKey, config, attachImages) {
+  const messages = [{ role: "system", content: config.replySystemPrompt }];
+  const contextInfo = buildReplyContextForPrompt(session.groupContext, session.userId);
+  const lastUserMsg = session.messages.slice().reverse().find((m) => m && m.role === "user")?.content || "";
+  const groupSnippet =
+    session.groupContext && looksReferentialShortQuestion(lastUserMsg)
+      ? buildRecentGroupSnippet(session.groupContext, 20)
+      : "";
+  if (contextInfo && session.turnCount === 0) {
+    messages.push({
+      role: "system",
+      content: `以下是该用户在本群最近发言的原文（截断），仅用于理解语境；禁止推断任何未出现的事实，也不要输出任何 QQ 号/ID：\n\n${contextInfo}`,
+    });
+  }
+  if (groupSnippet && session.turnCount === 0) {
+    messages.push({
+      role: "system",
+      content:
+        `以下是最近群聊片段（可能包含你需要指代的“上一条图片/上文”），仅用于定位上下文；` +
+        `只回答当前用户的问题，不要替别人答话；不要推断任何未出现的事实：\n\n${groupSnippet}`,
+    });
+  }
+
+  if (attachImages) {
+    const shouldAttachImage =
+      session.turnCount === 0 &&
+      (looksReferentialShortQuestion(lastUserMsg) || String(lastUserMsg).includes("[图片]"));
+    const imageUrls = shouldAttachImage ? getRelevantImageUrlsForSession(session, sessionKey) : [];
+    const httpImageUrls = imageUrls.filter((u) => /^https?:\/\//i.test(String(u || ""))).slice(0, 2);
+    if (httpImageUrls.length) {
+      const mm = buildMultimodalImageMessage(httpImageUrls);
+      if (mm) messages.push(mm);
+    }
+  }
+
+  messages.push(...session.messages);
+  return messages;
+}
+
 function callReplyModel(session, sessionKey, config) {
   pendingReplySessions.add(sessionKey);
   const requestId = genRequestId("reply");
+  const messages = buildReplyMessages(session, sessionKey, config, true);
+
+  const usedImages = messages.some((m) => Array.isArray(m?.content) && m.content.some((p) => p && p.type === "image_url"));
   pendingRequests.set(requestId, {
     type: "reply",
     sessionKey,
     createdAt: nbot.now(),
+    usedImages,
+    noImageRetry: false,
   });
-
-  const messages = [{ role: "system", content: config.replySystemPrompt }];
-  const contextInfo = buildReplyContextForPrompt(session.groupContext, session.userId);
-  if (contextInfo && session.turnCount === 0) {
-    messages.push({
-      role: "system",
-      content: `你可以参考以下群上下文，但不要输出任何 QQ 号/ID：\n\n${contextInfo}`,
-    });
-  }
-  messages.push(...session.messages);
 
   nbot.callLlmChat(requestId, messages, {
     modelName: config.replyModel,
-    maxTokens: 1024,
+    maxTokens: 160,
   });
 }
 
@@ -675,13 +874,6 @@ function endSessionWithReport(session, sessionKey, config) {
     return;
   }
 
-  nbot.sendReply(
-    session.userId,
-    session.groupId || 0,
-    config.enableWebsearch
-      ? "正在联网搜索并生成分析报告，请稍候..."
-      : "正在生成分析报告，请稍候..."
-  );
   callReportModel(session, sessionKey, config);
 }
 
@@ -743,7 +935,19 @@ function handleDecisionResult(requestInfo, success, content) {
       if (parsed) return parsed;
     }
 
-    // Strict mode: any non-JSON response is treated as NO (avoid false positives).
+    // 3) heuristic fallback: accept obvious YES/NO tokens when the model didn't follow format
+    const m = candidate.match(/\b(YES|NO)\b/i);
+    if (m && m[1]) {
+      const token = String(m[1]).toUpperCase();
+      return { decision: token === "YES" ? "YES" : "NO", confidence: 0.9, reason: "heuristic_token" };
+    }
+    const m2 = candidate.match(/decision\s*[:=]\s*(yes|no)/i);
+    if (m2 && m2[1]) {
+      const token = String(m2[1]).toUpperCase();
+      return { decision: token === "YES" ? "YES" : "NO", confidence: 0.9, reason: "heuristic_decision" };
+    }
+
+    // Strict mode: any other non-JSON response is treated as NO (avoid false positives).
     nbot.log.warn(
       `[smart-assist] decision parse failed mentioned=${mentioned ? "Y" : "N"} raw=${maskSensitive(text).slice(0, 220)}`
     );
@@ -766,7 +970,6 @@ function handleDecisionResult(requestInfo, success, content) {
   }
 
   const parsed = parseDecision(content);
-  // Fully delegate "should reply" to the decision model. Confidence is for logging only.
   const needsHelp = parsed.decision === "YES";
 
   nbot.log.info(
@@ -797,7 +1000,7 @@ function handleDecisionResult(requestInfo, success, content) {
 
   // Create new session
   const session = createSession(sessionKey, userId, groupId, seedItems[0] || message || "", {
-    mentionUserOnFirstReply: !mentioned,
+    mentionUserOnFirstReply: true,
   });
   session.groupContext = groupContext || null;
   for (const t of seedItems) {
@@ -833,22 +1036,64 @@ function handleReplyResult(requestInfo, success, content) {
   }
 
   if (!success) {
-    nbot.sendReply(
-      session.userId,
-      session.groupId || 0,
-      "抱歉，发生错误，请稍后再试。"
-    );
+    // If model/provider doesn't support image_url, retry once without images.
+    if (requestInfo && requestInfo.usedImages && !requestInfo.noImageRetry) {
+      pendingReplySessions.add(sessionKey);
+      const requestId = genRequestId("reply");
+      const retryMessages = buildReplyMessages(session, sessionKey, config, false);
+      pendingRequests.set(requestId, {
+        type: "reply",
+        sessionKey,
+        createdAt: nbot.now(),
+        usedImages: false,
+        noImageRetry: true,
+      });
+      nbot.callLlmChat(requestId, retryMessages, {
+        modelName: config.replyModel,
+        maxTokens: 160,
+      });
+      return;
+    }
+
+    nbot.sendReply(session.userId, session.groupId || 0, "出错了，稍后再试。");
     endSession(sessionKey);
     return;
   }
 
   // Add assistant reply to session
-  const cleaned = formatOneLinePlain(
+  let cleaned = formatOneLinePlain(
     String(content || "")
     .replace(/\s+@(?:群主|管理员|全体|all|everyone|here)\b/g, "")
     .replace(/^(?:@(?:群主|管理员|全体|all|everyone|here)\b\s*)+/g, "")
-    .trim()
+    .trim(),
+    config.replyMaxChars
   );
+  if (!cleaned) {
+    // If cleaning removed everything, ask the model again rather than hard-coding a reply.
+    pendingReplySessions.add(sessionKey);
+    const requestId = genRequestId("reply");
+    pendingRequests.set(requestId, {
+      type: "reply",
+      sessionKey,
+      createdAt: nbot.now(),
+    });
+
+    const retryMessages = [
+      {
+        role: "system",
+        content:
+          config.replySystemPrompt +
+          "\n\n补充要求：你的上一条输出在清洗后为空；请只输出一句中文短句（同一行），不要任何标点以外的格式。",
+      },
+      ...session.messages,
+    ];
+
+    nbot.callLlmChat(requestId, retryMessages, {
+      modelName: config.replyModel,
+      maxTokens: 80,
+    });
+    return;
+  }
   addMessageToSession(session, "assistant", cleaned);
   session.turnCount++;
 
@@ -860,14 +1105,9 @@ function handleReplyResult(requestInfo, success, content) {
   }
   nbot.sendReply(session.userId, session.groupId || 0, `${prefix}${cleaned}`);
 
-  // Check if max turns reached
+  // Check if max turns reached (silent end; avoid spamming in QQ group)
   if (session.turnCount >= config.maxTurns) {
-    nbot.sendReply(
-      session.userId,
-      session.groupId || 0,
-      "对话有点长，我先整理一份分析报告给你。"
-    );
-    endSessionWithReport(session, sessionKey, config);
+    endSession(sessionKey);
     return;
   }
 
@@ -1110,7 +1350,7 @@ function cleanupStaleRequests(config) {
 // Plugin object
 return {
   onEnable() {
-    nbot.log.info("Smart Assistant Plugin v2.2.9 enabled");
+    nbot.log.info("Smart Assistant Plugin v2.2.17 enabled");
   },
 
   onDisable() {
@@ -1169,6 +1409,15 @@ return {
       const message = raw_message || "";
       const llmMessage = sanitizeMessageForLlm(message, ctx);
       const mentions = summarizeMentions(ctx);
+      const imageUrls = extractImageUrlsFromCtx(ctx);
+      if (imageUrls.length) {
+        noteRecentGroupImages(group_id, imageUrls);
+        noteRecentUserImages(sessionKey, imageUrls);
+        if (session) {
+          session.lastImageUrls = imageUrls;
+          session.lastImageAt = nbot.now();
+        }
+      }
 
       // If active session exists
       if (session && session.state === "active") {
@@ -1204,14 +1453,6 @@ return {
       const trigger = getDecisionTrigger(ctx, message, config);
       const shouldCheck = checkCooldown(sessionKey, config.cooldownMs) && trigger.shouldCheck;
       if (shouldCheck) {
-        // If user only greets the bot, respond briefly but don't start a session.
-        // This avoids "chatbot mode" in QQ group.
-        if (mentions.bot && isGreetingOnly(llmMessage)) {
-          const prefix = nbot.at(user_id) ? `${nbot.at(user_id)} ` : "";
-          nbot.sendReply(user_id, group_id, `${prefix}在的，有什么需要帮忙？`);
-          return true;
-        }
-
         // Store a sanitized copy for LLM so CQ segments don't mislead the decision model.
         // Still keep the boolean mentioned flag from the real message segments.
         let batch = decisionBatches.get(sessionKey);
@@ -1225,6 +1466,7 @@ return {
           t: nbot.now(),
           text: sanitizeMessageForLlm(message, ctx),
           mentioned: !!trigger.mentioned,
+          imageUrls,
         });
         scheduleDecisionFlush(sessionKey, trigger.urgent, config);
       }
