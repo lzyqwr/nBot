@@ -1,5 +1,5 @@
 /**
- * nBot Smart Assistant Plugin v2.2.8
+ * nBot Smart Assistant Plugin v2.2.9
  * Auto-detects if user needs help, enters multi-turn conversation mode,
  * supports web search, generates analysis report via forward message
  *
@@ -103,8 +103,8 @@ function getConfig() {
       "",
       "要求：",
       "- 用中文回答，简洁、具体。",
-      "- 这是 QQ 群聊：回复尽量短（<= 3 行），不要长篇大论，不要列 1-6 这种清单。",
-      "- 最多问 1 个关键澄清问题；优先让对方直接贴“报错全文/截图”。",
+      "- 这是 QQ 群聊：只输出【一行】纯文本（不要换行），不要 Markdown（不要列表/加粗/代码块/反引号）。",
+      "- 最多问 1 个关键澄清问题；优先让对方直接贴“报错全文/截图/日志”。",
       "- 如果只是打招呼/玩笑/吐槽/闲聊，不要进入长对话，最多一句话带过或不介入。",
       "- 信息不足时先问 1-2 个关键澄清问题；信息足够则直接给步骤化方案。",
       "- 不要输出任何 QQ 号/ID/Token/密钥。",
@@ -564,13 +564,32 @@ function buildReplyContextForPrompt(groupContext, userId) {
   return contextInfo.trim();
 }
 
-function clipForGroupChat(text, maxChars = 220, maxLines = 3) {
-  let s = String(text || "").trim();
+function formatOneLinePlain(text, maxChars = 160) {
+  let s = String(text || "");
   if (!s) return "";
-  s = s.replace(/\r\n/g, "\n");
-  const lines = s.split("\n").map((l) => l.trim()).filter(Boolean);
-  const clippedLines = lines.slice(0, maxLines);
-  s = clippedLines.join("\n");
+
+  // Remove common markdown formatting tokens.
+  s = s
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`+/g, "")
+    .replace(/\*\*+/g, "")
+    .replace(/__+/g, "")
+    .replace(/#+\s*/g, "")
+    .replace(/^\s*>+\s*/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/^\s*\d+\s*[\.\)]\s+/gm, "")
+    .replace(/\r\n/g, "\n");
+
+  // Merge all lines into a single line.
+  s = s
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .join(" ");
+
+  // Final whitespace cleanup.
+  s = s.replace(/\s+/g, " ").trim();
+
   if (s.length > maxChars) {
     s = s.slice(0, maxChars).trimEnd();
   }
@@ -824,7 +843,7 @@ function handleReplyResult(requestInfo, success, content) {
   }
 
   // Add assistant reply to session
-  const cleaned = clipForGroupChat(
+  const cleaned = formatOneLinePlain(
     String(content || "")
     .replace(/\s+@(?:群主|管理员|全体|all|everyone|here)\b/g, "")
     .replace(/^(?:@(?:群主|管理员|全体|all|everyone|here)\b\s*)+/g, "")
@@ -1091,7 +1110,7 @@ function cleanupStaleRequests(config) {
 // Plugin object
 return {
   onEnable() {
-    nbot.log.info("Smart Assistant Plugin v2.2.8 enabled");
+    nbot.log.info("Smart Assistant Plugin v2.2.9 enabled");
   },
 
   onDisable() {
