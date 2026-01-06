@@ -572,7 +572,13 @@ function extractFileFromSegments(message) {
     if (!seg || typeof seg !== "object") continue;
     if (String(seg.type || "") !== "file") continue;
     const data = seg.data || {};
-    const name = data.name || data.file_name || data.filename;
+    const fileField = typeof data.file === "string" ? data.file : "";
+    const guessedName =
+      (typeof data.name === "string" && data.name.trim()) ||
+      (typeof data.file_name === "string" && data.file_name.trim()) ||
+      (typeof data.filename === "string" && data.filename.trim()) ||
+      (fileField && !looksLikeUrl(fileField) && hasExtension(fileField) ? fileField : "");
+    const name = guessedName || null;
     const urlCandidate =
       data.url || data.file_url || data.download_url || data.down_url || data.path;
     const url = looksLikeUrl(urlCandidate)
@@ -604,12 +610,19 @@ function extractTargetFromReply(reply) {
   const busid = reply.busid || reply.busi_id || reply.busId || reply.busiId;
 
   if (fileUrl || fileId) {
+    const fileField = typeof reply.file === "string" ? reply.file : "";
+    const name =
+      (typeof fileName === "string" && fileName.trim() && fileName !== "日志文件"
+        ? fileName
+        : fileField && !looksLikeUrl(fileField) && hasExtension(fileField)
+          ? fileField
+          : fileName) || "日志文件";
     return {
       type: "file",
       url: fileUrl || null,
       fileId: fileUrl ? null : fileId,
       busid,
-      name: fileName,
+      name,
     };
   }
 
@@ -634,12 +647,19 @@ function extractTargetFromCtx(ctx) {
   const busid = ctx.busid || ctx.busi_id || ctx.busId || ctx.busiId;
 
   if (fileUrl || fileId) {
+    const fileField = typeof ctx.file === "string" ? ctx.file : "";
+    const name =
+      (typeof fileName === "string" && fileName.trim() && fileName !== "日志文件"
+        ? fileName
+        : fileField && !looksLikeUrl(fileField) && hasExtension(fileField)
+          ? fileField
+          : fileName) || "日志文件";
     return {
       type: "file",
       url: fileUrl || null,
       fileId: fileUrl ? null : fileId,
       busid,
-      name: fileName,
+      name,
     };
   }
 
@@ -1004,7 +1024,7 @@ return {
     const gid = group_id || 0;
     const key = buildSessionKey(user_id, gid);
 
-    if (config.auto_trigger) {
+  if (config.auto_trigger) {
       const autoTarget = extractTargetFromCtx(ctx);
       if (autoTarget && autoTarget.type === "file") {
         const fileName = autoTarget.name || "";
@@ -1014,7 +1034,9 @@ return {
         const matchResult = isText
           ? matchKeywordsOrdered(fileName, config.text_file_keywords)
           : isArchive
-            ? matchKeywordsOrdered(fileName, config.archive_keywords)
+            ? matchKeywordsOrdered(fileName, config.archive_keywords).matched
+              ? matchKeywordsOrdered(fileName, config.archive_keywords)
+              : matchKeywordsOrdered(fileName, config.text_file_keywords)
             : { matched: false };
 
         if (matchResult.matched) {
