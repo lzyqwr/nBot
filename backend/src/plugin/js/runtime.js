@@ -79,6 +79,45 @@ globalThis.nbot = {
     );
   },
 
+  // Call LLM by downloading an archive URL and extracting a log/text file (temp file, removed after processing)
+  // Supported: .zip / .tar / .tar.gz (.tgz) / .gz
+  callLlmForwardArchiveFromUrl: (
+    userId,
+    groupId,
+    systemPrompt,
+    prompt,
+    url,
+    title,
+    fileName = "",
+    timeoutMs = 30000,
+    maxDownloadBytes = 30_000_000,
+    maxExtractBytes = 120_000_000,
+    maxFileBytes = 15_000_000,
+    maxFiles = 50,
+    keywords = [],
+    options = {}
+  ) => {
+    const payload = {
+      model_name: options.modelName ? String(options.modelName) : null,
+      url: String(url),
+      title: String(title),
+      file_name: fileName ? String(fileName) : null,
+      timeout_ms: timeoutMs,
+      max_download_bytes: maxDownloadBytes,
+      max_extract_bytes: maxExtractBytes,
+      max_file_bytes: maxFileBytes,
+      max_files: maxFiles,
+      keywords: Array.isArray(keywords) ? keywords.map((x) => String(x)) : [],
+    };
+    return core.ops.op_call_llm_forward_archive_from_url(
+      toBigInt(userId),
+      toBigInt(groupId || 0),
+      systemPrompt,
+      prompt,
+      JSON.stringify(payload)
+    );
+  },
+
   // Call multimodal LLM with an image from URL (downloaded by core, temp file removed after processing)
   callLlmForwardImageFromUrl: (
     userId,
@@ -449,6 +488,7 @@ export const at = globalThis.nbot.at;
 export const callApi = globalThis.nbot.callApi;
 export const callLlmForward = globalThis.nbot.callLlmForward;
 export const callLlmForwardFromUrl = globalThis.nbot.callLlmForwardFromUrl;
+export const callLlmForwardArchiveFromUrl = globalThis.nbot.callLlmForwardArchiveFromUrl;
 export const callLlmForwardImageFromUrl = globalThis.nbot.callLlmForwardImageFromUrl;
 export const callLlmForwardVideoFromUrl = globalThis.nbot.callLlmForwardVideoFromUrl;
 export const callLlmForwardAudioFromUrl = globalThis.nbot.callLlmForwardAudioFromUrl;

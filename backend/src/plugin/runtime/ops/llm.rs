@@ -222,6 +222,91 @@ pub(in super::super) fn op_call_llm_forward_from_url(
 }
 
 #[derive(serde::Deserialize, Default)]
+struct CallLlmForwardArchiveFromUrlPayload {
+    #[serde(default)]
+    model_name: Option<String>,
+    url: String,
+    title: String,
+    #[serde(default)]
+    file_name: Option<String>,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+    #[serde(default)]
+    max_download_bytes: Option<u64>,
+    #[serde(default)]
+    max_extract_bytes: Option<u64>,
+    #[serde(default)]
+    max_file_bytes: Option<u64>,
+    #[serde(default)]
+    max_files: Option<u32>,
+    #[serde(default)]
+    keywords: Option<Vec<String>>,
+}
+
+// Op: 从 URL 下载压缩包并提取日志后调用 LLM 并发送合并转发消息（临时文件，处理完即删除）
+#[op2(fast)]
+pub(in super::super) fn op_call_llm_forward_archive_from_url(
+    state: &mut OpState,
+    #[bigint] user_id: i64,
+    #[bigint] group_id: i64,
+    #[string] system_prompt: &str,
+    #[string] prompt: &str,
+    #[string] payload_json: &str,
+) {
+    let Some(payload) = super::parse_payload_or_reply::<CallLlmForwardArchiveFromUrlPayload>(
+        state,
+        user_id,
+        group_id,
+        "callLlmForwardArchiveFromUrl",
+        payload_json,
+    ) else {
+        return;
+    };
+
+    if payload.url.trim().is_empty() || payload.title.trim().is_empty() {
+        super::push_reply(state, user_id, group_id, "插件内部错误：参数缺失");
+        return;
+    }
+
+    let keywords = payload
+        .keywords
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+
+    state
+        .borrow_mut::<PluginOpState>()
+        .outputs
+        .push(PluginOutput::CallLlmAndForwardArchiveFromUrl {
+            user_id: user_id as u64,
+            group_id: group_id as u64,
+            model_name: payload.model_name.filter(|s| !s.trim().is_empty()),
+            system_prompt: system_prompt.to_string(),
+            prompt: prompt.to_string(),
+            url: payload.url,
+            title: payload.title,
+            file_name: payload.file_name,
+            timeout_ms: payload.timeout_ms.unwrap_or(30000).clamp(1000, 120000),
+            max_download_bytes: payload
+                .max_download_bytes
+                .unwrap_or(30_000_000)
+                .clamp(10_000, 200_000_000),
+            max_extract_bytes: payload
+                .max_extract_bytes
+                .unwrap_or(120_000_000)
+                .clamp(1_000_000, 1_000_000_000),
+            max_file_bytes: payload
+                .max_file_bytes
+                .unwrap_or(15_000_000)
+                .clamp(100_000, 200_000_000),
+            max_files: payload.max_files.unwrap_or(50).clamp(1, 500),
+            keywords,
+        });
+}
+
+#[derive(serde::Deserialize, Default)]
 struct CallLlmForwardImageFromUrlPayload {
     #[serde(default)]
     model_name: Option<String>,

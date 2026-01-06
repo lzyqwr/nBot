@@ -7,9 +7,11 @@ use super::super::connection::BotRuntime;
 
 mod download;
 pub(super) mod multimodal;
+mod archive;
 mod output_extract;
 mod redact;
 
+use archive::download_archive_text;
 use download::{download_document_text, DocumentMeta};
 use multimodal::common::{
     call_chat_completions, log_llm_error, log_llm_len, reply_err, resolve_llm_config_by_name,
@@ -44,6 +46,16 @@ pub(super) enum LlmForwardSource<'a> {
         timeout_ms: u64,
         max_bytes: u64,
         max_chars: u64,
+    },
+    ArchiveUrl {
+        url: &'a str,
+        file_name: Option<&'a str>,
+        timeout_ms: u64,
+        max_download_bytes: u64,
+        max_extract_bytes: u64,
+        max_file_bytes: u64,
+        max_files: u32,
+        keywords: &'a [String],
     },
 }
 
@@ -177,6 +189,36 @@ pub(super) async fn process_llm_forward(
                     &format!("下载失败：{e}"),
                 )
                 .await;
+                return;
+            }
+        },
+        LlmForwardSource::ArchiveUrl {
+            url,
+            file_name,
+            timeout_ms,
+            max_download_bytes,
+            max_extract_bytes,
+            max_file_bytes,
+            max_files,
+            keywords,
+        } => match download_archive_text(
+            url,
+            file_name,
+            timeout_ms,
+            max_download_bytes,
+            max_extract_bytes,
+            max_file_bytes,
+            max_files,
+            keywords,
+        )
+        .await
+        {
+            Ok((guard, text, mut meta)) => {
+                meta.title = title.to_string();
+                (Some(guard), text, meta)
+            }
+            Err(e) => {
+                reply_err(runtime, bot_id, user_id, group_id, &format!("解压失败：{e}")).await;
                 return;
             }
         },

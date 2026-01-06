@@ -209,7 +209,7 @@
       "type": "boolean",
       "label": "允许压缩包",
       "description": "是否允许直接分析压缩包文件",
-      "default": false,
+      "default": true,
       "options": null,
       "itemType": null,
       "min": null,
@@ -255,7 +255,7 @@
     "max_download_bytes": 30000000,
     "max_extract_bytes": 120000000,
     "max_file_bytes": 15000000,
-    "allow_archive": false,
+    "allow_archive": true,
     "show_processing_msg": true,
     "auto_trigger": true
   }

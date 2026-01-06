@@ -740,7 +740,7 @@ function extractFileUrlFromResponse(data) {
   return { url, name };
 }
 
-async function analyzeArchiveFromUrl(userId, groupId, url, name, config) {
+async function analyzeArchiveFromUrlLegacy(userId, groupId, url, name, config) {
   if (!canUseLocalFiles()) {
     nbot.sendReply(userId, groupId || 0, "当前环境不支持解压，请解压后上传日志文件");
     return;
@@ -858,10 +858,7 @@ function analyzeFileFromUrl(userId, groupId, url, name, config) {
   }
 
   if (isArchive) {
-    void analyzeArchiveFromUrl(userId, groupId, url, fileName, config).catch((e) => {
-      nbot.log.warn(`日志解压处理失败: ${e}`);
-      nbot.sendReply(userId, groupId || 0, "解压处理失败，请稍后再试");
-    });
+    analyzeArchiveFromUrl(userId, groupId, url, fileName, config);
     return;
   }
 
@@ -882,6 +879,38 @@ function analyzeFileFromUrl(userId, groupId, url, name, config) {
     30000,
     maxBytes,
     maxChars,
+    { modelName: config.analysis_model }
+  );
+}
+
+function analyzeArchiveFromUrl(userId, groupId, url, fileName, config) {
+  if (typeof nbot.callLlmForwardArchiveFromUrl !== "function") {
+    nbot.sendReply(userId, groupId || 0, "当前后端不支持分析压缩包，请解压后上传 txt/log 文件");
+    return;
+  }
+
+  sendProcessing(userId, groupId, config);
+
+  const systemPrompt = resolveSystemPrompt(config);
+  const keywords = [
+    ...normalizeList(config.text_file_keywords),
+    ...normalizeList(config.archive_keywords),
+  ];
+
+  nbot.callLlmForwardArchiveFromUrl(
+    userId,
+    groupId || 0,
+    systemPrompt,
+    config.user_prompt,
+    url,
+    "日志分析",
+    fileName,
+    30000,
+    config.max_download_bytes,
+    config.max_extract_bytes,
+    config.max_file_bytes,
+    100,
+    keywords,
     { modelName: config.analysis_model }
   );
 }

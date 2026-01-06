@@ -72,14 +72,14 @@ impl std::fmt::Display for LlmCallError {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct BinaryMeta {
-    pub(super) file_name: Option<String>,
-    pub(super) file_ext: Option<String>,
-    pub(super) size_bytes: u64,
-    pub(super) truncated: bool,
+pub(in super::super) struct BinaryMeta {
+    pub(in super::super) file_name: Option<String>,
+    pub(in super::super) file_ext: Option<String>,
+    pub(in super::super) size_bytes: u64,
+    pub(in super::super) truncated: bool,
 }
 
-pub(super) async fn download_binary_to_temp(
+pub(in super::super) async fn download_binary_to_temp(
     url: &str,
     file_name: Option<&str>,
     timeout_ms: u64,

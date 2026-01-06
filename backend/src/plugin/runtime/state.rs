@@ -67,6 +67,32 @@ pub enum PluginOutput {
         #[serde(default)]
         max_chars: u64,
     },
+    /// 从 URL 下载压缩包并提取日志后调用 LLM（临时文件，处理完即删除）并发送结果（合并转发）
+    CallLlmAndForwardArchiveFromUrl {
+        user_id: u64,
+        group_id: u64,
+        /// 指定模型映射名称（为空则使用默认模型）
+        #[serde(default)]
+        model_name: Option<String>,
+        system_prompt: String,
+        prompt: String,
+        url: String,
+        title: String,
+        #[serde(default)]
+        file_name: Option<String>,
+        #[serde(default)]
+        timeout_ms: u64,
+        #[serde(default)]
+        max_download_bytes: u64,
+        #[serde(default)]
+        max_extract_bytes: u64,
+        #[serde(default)]
+        max_file_bytes: u64,
+        #[serde(default)]
+        max_files: u32,
+        #[serde(default)]
+        keywords: Vec<String>,
+    },
     /// 从 URL 下载图片后调用多模态 LLM，并发送结果（合并转发）
     CallLlmAndForwardImageFromUrl {
         user_id: u64,

@@ -249,6 +249,53 @@ pub(super) async fn process_plugin_outputs(
                 )
                 .await;
             }
+            PluginOutput::CallLlmAndForwardArchiveFromUrl {
+                user_id,
+                group_id,
+                model_name,
+                system_prompt,
+                prompt,
+                url,
+                title,
+                file_name,
+                timeout_ms,
+                max_download_bytes,
+                max_extract_bytes,
+                max_file_bytes,
+                max_files,
+                keywords,
+            } => {
+                let Some(_guard) =
+                    begin_llm_task_guard(runtime, bot_id, abuse_cfg, *user_id, *group_id).await
+                else {
+                    continue;
+                };
+
+                process_llm_forward(
+                    state,
+                    runtime,
+                    bot_id,
+                    LlmForwardInput {
+                        user_id: *user_id,
+                        group_id: *group_id,
+                        model_name: model_name.as_deref(),
+                        system_prompt,
+                        prompt,
+                        title,
+                        source: LlmForwardSource::ArchiveUrl {
+                            url,
+                            file_name: file_name.as_deref(),
+                            timeout_ms: *timeout_ms,
+                            max_download_bytes: *max_download_bytes,
+                            max_extract_bytes: *max_extract_bytes,
+                            max_file_bytes: *max_file_bytes,
+                            max_files: *max_files,
+                            keywords,
+                        },
+                    },
+                )
+                .await;
+            }
             PluginOutput::CallLlmAndForwardImageFromUrl {
                 user_id,
                 group_id,
