@@ -1,9 +1,13 @@
 use crate::command::{Command, CommandAction};
 use crate::models::SharedState;
 use crate::qq_face;
+use dashmap::DashMap;
+use once_cell::sync::Lazy;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::info;
 
 use super::command_exec::{execute_command, process_plugin_outputs_with_source, CommandExecInput};
@@ -12,12 +16,83 @@ use super::privacy;
 
 mod reply;
 
+const FILE_EVENT_DEDUPE_MS: u64 = 5_000;
+static FILE_EVENT_DEDUPE: Lazy<DashMap<String, u64>> = Lazy::new(DashMap::new);
+static FILE_EVENT_DEDUPE_LAST_CLEANUP_MS: AtomicU64 = AtomicU64::new(0);
+
+fn now_millis_lossy() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn cleanup_file_event_dedupe(now_ms: u64) {
+    let last = FILE_EVENT_DEDUPE_LAST_CLEANUP_MS.load(Ordering::Relaxed);
+    if now_ms.saturating_sub(last) < 1_000 {
+        return;
+    }
+    FILE_EVENT_DEDUPE_LAST_CLEANUP_MS.store(now_ms, Ordering::Relaxed);
+    let keys: Vec<String> = FILE_EVENT_DEDUPE
+        .iter()
+        .filter_map(|e| if *e.value() <= now_ms { Some(e.key().clone()) } else { None })
+        .collect();
+    for k in keys {
+        FILE_EVENT_DEDUPE.remove(&k);
+    }
+}
+
+fn should_process_file_event(key: &str) -> bool {
+    let now_ms = now_millis_lossy();
+    cleanup_file_event_dedupe(now_ms);
+
+    if let Some(expires_at) = FILE_EVENT_DEDUPE.get(key).map(|v| *v.value()) {
+        if now_ms < expires_at {
+            return false;
+        }
+    }
+
+    FILE_EVENT_DEDUPE.insert(key.to_string(), now_ms + FILE_EVENT_DEDUPE_MS);
+    true
+}
+
 fn parse_u64_field(v: Option<&Value>) -> Option<u64> {
     match v? {
         Value::Number(n) => n.as_u64(),
         Value::String(s) => s.trim().parse::<u64>().ok(),
         _ => None,
     }
+}
+
+fn extract_file_id_from_message_event(event: &Value) -> Option<(String, String)> {
+    let segments = event.get("message").and_then(|m| m.as_array())?;
+    let seg = segments
+        .iter()
+        .find(|s| s.get("type").and_then(|t| t.as_str()) == Some("file"))?;
+    let data = seg.get("data")?;
+
+    let file_id = data
+        .get("file_id")
+        .or_else(|| data.get("id"))
+        .or_else(|| data.get("fileId"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?
+        .to_string();
+
+    let busid = data
+        .get("busid")
+        .or_else(|| data.get("busi_id"))
+        .or_else(|| data.get("busiId"))
+        .or_else(|| data.get("busId"))
+        .map(|v| match v {
+            Value::String(s) => s.clone(),
+            Value::Number(n) => n.to_string(),
+            _ => String::new(),
+        })
+        .unwrap_or_default();
+
+    Some((file_id, busid))
 }
 
 fn message_at_self(event: &serde_json::Value, self_id: u64) -> bool {
@@ -277,6 +352,19 @@ async fn handle_message(
 
     let at_bot = self_id.map(|sid| message_at_self(&event, sid)).unwrap_or(false);
     let self_id_str = self_id.map(|sid| sid.to_string());
+
+    // Some adapters (e.g. NapCat) may report a group file upload as both:
+    // - a notice event (notice_type=group_upload), and
+    // - a message event containing a file segment with the same file_id.
+    //
+    // This can cause plugins to trigger twice and trip LLM abuse guards, so we dedupe at framework level.
+    if let (Some(gid), Some((file_id, busid))) = (group_id, extract_file_id_from_message_event(&event)) {
+        let key = format!("g:{gid}:u:{user_id}:fid:{file_id}:busid:{busid}");
+        if !should_process_file_event(&key) {
+            info!("[{}] 忽略重复的群文件上传消息: {}", bot_id, raw_message.as_str());
+            return;
+        }
+    }
 
     // 统计消息
     state.message_stats.check_reset().await;
@@ -626,6 +714,47 @@ async fn handle_notice(
     }
 
     let notice_ctx = match notice_type {
+        // 群文件上传（群文件系统）
+        "group_upload" => {
+            let file = event.get("file").cloned().unwrap_or(Value::Null);
+            let file_id = file
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let busid = file
+                .get("busid")
+                .map(|v| match v {
+                    Value::String(s) => s.clone(),
+                    Value::Number(n) => n.to_string(),
+                    _ => String::new(),
+                })
+                .unwrap_or_default();
+
+            if let Some(gid) = group_id {
+                if !file_id.is_empty() {
+                    let key = format!("g:{gid}:u:{user_id}:fid:{file_id}:busid:{busid}");
+                    if !should_process_file_event(&key) {
+                        info!("[{}] 忽略重复的群文件上传通知: file_id={}", bot_id, file_id);
+                        return;
+                    }
+                }
+            }
+
+            json!({
+                "notice_type": notice_type,
+                "sub_type": sub_type,
+                "user_id": user_id,
+                "group_id": group_id,
+                "self_id": self_id,
+                "self_id_str": self_id_str,
+                "file": file,
+                "raw_event": event,
+                "bot_is_admin": bot_is_admin,
+                "bot_role": bot_role,
+            })
+        }
         // 灰条消息事件
         "notify" if sub_type == "gray_tip" => {
             let message_id = event.get("message_id").cloned().unwrap_or(Value::Null);
