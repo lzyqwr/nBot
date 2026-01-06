@@ -1,0 +1,148 @@
+{
+  "id": "smart-assist",
+  "name": "智能助手",
+  "version": "2.2.8",
+  "author": "nBot",
+  "description": "智能对话助手：自动监控群聊消息并识别求助场景（无需@；@会提高优先级），进入多轮对话并最终通过合并转发生成分析报告；可选 Tavily 联网搜索（需在 LLM 模块配置 tavily_api_key）。",
+  "type": "bot",
+  "permissions": [],
+  "signature": null,
+  "builtin": true,
+  "commands": [],
+  "configSchema": [
+    {
+      "key": "decision_merge_seconds",
+      "type": "number",
+      "label": "消息合并窗口(秒)",
+      "description": "仅用于「决策模型」：同一用户在短时间内的多条消息会合并后再做一次决策，以降低模型消耗；@ 机器人时会立即触发（不等待）。",
+      "default": 5,
+      "options": null,
+      "itemType": null,
+      "min": 1,
+      "max": 30
+    },
+    {
+      "key": "decision_model",
+      "type": "string",
+      "label": "决策模型",
+      "description": "用于判断用户是否需要帮助的模型映射名称（需在 LLM 模块中配置）",
+      "default": "default",
+      "options": null,
+      "itemType": null,
+      "min": null,
+      "max": null
+    },
+    {
+      "key": "reply_model",
+      "type": "string",
+      "label": "回复模型",
+      "description": "用于多轮对话的模型映射名称（需在 LLM 模块中配置）",
+      "default": "default",
+      "options": null,
+      "itemType": null,
+      "min": null,
+      "max": null
+    },
+    {
+      "key": "websearch_model",
+      "type": "string",
+      "label": "联网搜索模型",
+      "description": "用于联网搜索分析的模型映射名称（需在 LLM 模块中配置，需支持函数调用）。如果在 LLM 模块中配置了 tavily_api_key，将使用 Tavily 进行搜索。",
+      "default": "default",
+      "options": null,
+      "itemType": null,
+      "min": null,
+      "max": null
+    },
+    {
+      "key": "enable_websearch",
+      "type": "boolean",
+      "label": "启用联网搜索",
+      "description": "在生成报告时是否启用联网搜索以获取更准确的信息（需在 LLM 模块中配置 tavily_api_key）",
+      "default": true,
+      "options": null,
+      "itemType": null,
+      "min": null,
+      "max": null
+    },
+    {
+      "key": "max_turns",
+      "type": "number",
+      "label": "最大对话轮数",
+      "description": "单次会话的最大对话轮数",
+      "default": 10,
+      "options": null,
+      "itemType": null,
+      "min": 3,
+      "max": 30
+    },
+    {
+      "key": "session_timeout_minutes",
+      "type": "number",
+      "label": "会话超时(分钟)",
+      "description": "会话无活动后自动结束的时间",
+      "default": 10,
+      "options": null,
+      "itemType": null,
+      "min": 1,
+      "max": 60
+    },
+    {
+      "key": "cooldown_seconds",
+      "type": "number",
+      "label": "冷却时间(秒)",
+      "description": "同一用户两次触发智能助手的最小间隔",
+      "default": 60,
+      "options": null,
+      "itemType": null,
+      "min": 0,
+      "max": 300
+    },
+    {
+      "key": "auto_trigger",
+      "type": "boolean",
+      "label": "自动触发",
+      "description": "是否在群聊中自动监控并识别求助类消息（无需@；@会提高优先级）。关闭后不会自动触发。",
+      "default": true,
+      "options": null,
+      "itemType": null,
+      "min": null,
+      "max": null
+    },
+    {
+      "key": "fetch_group_context",
+      "type": "boolean",
+      "label": "获取群上下文",
+      "description": "在判断用户是否需要帮助时，是否获取群公告和用户历史消息作为上下文",
+      "default": true,
+      "options": null,
+      "itemType": null,
+      "min": null,
+      "max": null
+    },
+    {
+      "key": "context_message_count",
+      "type": "number",
+      "label": "上下文消息数量",
+      "description": "获取群历史消息的数量（用于决策上下文）",
+      "default": 20,
+      "options": null,
+      "itemType": null,
+      "min": 5,
+      "max": 50
+    }
+  ],
+  "config": {
+    "decision_merge_seconds": 5,
+    "decision_model": "default",
+    "reply_model": "default",
+    "websearch_model": "default",
+    "enable_websearch": true,
+    "max_turns": 10,
+    "session_timeout_minutes": 10,
+    "cooldown_seconds": 60,
+    "auto_trigger": true,
+    "fetch_group_context": true,
+    "context_message_count": 20
+  }
+}
