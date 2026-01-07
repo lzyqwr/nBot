@@ -177,6 +177,29 @@ async fn sanitize_outgoing_text(
     group_id: Option<u64>,
     message: &str,
 ) -> String {
+    fn strip_transport_controls(message: &str) -> String {
+        let mut out = String::with_capacity(message.len());
+        let mut changed = false;
+        for ch in message.chars() {
+            match ch {
+                '\u{0000}'..='\u{001F}' | '\u{007F}' => {
+                    if ch == '\n' || ch == '\r' || ch == '\t' {
+                        out.push(ch);
+                    } else {
+                        out.push(' ');
+                        changed = true;
+                    }
+                }
+                _ => out.push(ch),
+            }
+        }
+        if !changed {
+            // Preserve original if we only copied chars unchanged.
+            return message.to_string();
+        }
+        out
+    }
+
     fn protect_cq_segments(message: &str) -> (String, Vec<(String, String)>) {
         let mut out = String::with_capacity(message.len());
         let mut rest = message;
@@ -210,7 +233,7 @@ async fn sanitize_outgoing_text(
     for (placeholder, original) in replacements {
         out = out.replace(&placeholder, &original);
     }
-    out
+    strip_transport_controls(&out)
 }
 
 async fn sanitize_onebot_message_value(

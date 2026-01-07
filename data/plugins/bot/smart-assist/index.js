@@ -899,6 +899,9 @@ function formatOneLinePlain(text, maxChars = 160) {
   let s = String(text || "");
   if (!s) return "";
 
+  // Strip control characters that may cause downstream truncation (e.g. NUL).
+  s = s.replace(/[\u0000-\u001F\u007F]/g, " ");
+
   // Remove common markdown formatting tokens.
   s = s
     .replace(/```[\s\S]*?```/g, " ")
@@ -1014,13 +1017,13 @@ function callReplyModel(session, sessionKey, config, useSearch = false) {
   if (useSearch && config.enableWebsearch) {
     nbot.callLlmChatWithSearch(requestId, messages, {
       modelName: config.websearchModel,
-      maxTokens: 96,
+      maxTokens: 256,
       enableSearch: true,
     });
   } else {
     nbot.callLlmChat(requestId, messages, {
       modelName: config.replyModel,
-      maxTokens: 96,
+      maxTokens: 256,
     });
   }
 }
@@ -1264,6 +1267,15 @@ function handleReplyResult(requestInfo, success, content) {
     return;
   }
 
+  const raw = String(content || "");
+  const rawLen = raw.length;
+  const hasControl = /[\u0000-\u001F\u007F]/.test(raw);
+  if (hasControl || rawLen <= 4) {
+    nbot.log.warn(
+      `[smart-assist] reply_raw len=${rawLen} ctl=${hasControl ? "Y" : "N"} usedImages=${requestInfo.usedImages ? "Y" : "N"}`
+    );
+  }
+
   if (!success) {
     // If model/provider doesn't support image_url, retry once without images.
     if (requestInfo && requestInfo.usedImages && !requestInfo.noImageRetry) {
@@ -1279,7 +1291,7 @@ function handleReplyResult(requestInfo, success, content) {
       });
       nbot.callLlmChat(requestId, retryMessages, {
         modelName: config.replyModel,
-        maxTokens: 160,
+        maxTokens: 256,
       });
       return;
     }
@@ -1291,12 +1303,15 @@ function handleReplyResult(requestInfo, success, content) {
 
   // Add assistant reply to session
   let cleaned = formatOneLinePlain(
-    String(content || "")
+    raw
     .replace(/\s+@(?:群主|管理员|全体|all|everyone|here)\b/g, "")
     .replace(/^(?:@(?:群主|管理员|全体|all|everyone|here)\b\s*)+/g, "")
     .trim(),
     config.replyMaxChars
   );
+  if (/[\u0000-\u001F\u007F]/.test(cleaned)) {
+    cleaned = cleaned.replace(/[\u0000-\u001F\u007F]/g, " ").replace(/\s+/g, " ").trim();
+  }
   if (!cleaned) {
     // If cleaning removed everything, ask the model again rather than hard-coding a reply.
     pendingReplySessions.add(sessionKey);
