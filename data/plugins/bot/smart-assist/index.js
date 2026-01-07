@@ -50,6 +50,26 @@ function genRequestId(type) {
   return `smart-assist-${type}-${++requestIdCounter}-${nbot.now()}`;
 }
 
+function maskSensitiveForLog(text) {
+  return String(text || "")
+    // mask long digit sequences (QQ/IDs/etc)
+    .replace(/\d{5,}/g, "***")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function escapeForLog(text, maxLen = 600) {
+  let s = "";
+  try {
+    s = JSON.stringify(String(text || ""));
+  } catch {
+    s = String(text || "");
+  }
+  s = maskSensitiveForLog(s);
+  if (s.length > maxLen) s = s.slice(0, maxLen) + "...";
+  return s;
+}
+
 // Get config
 function getConfig() {
   const cfg = nbot.getConfig();
@@ -810,6 +830,8 @@ function callDecisionModel(sessionKey, userId, groupId, message, mentioned, item
     groupContext: groupContext || null,
     formatRetry: !!options.formatRetry,
     createdAt: nbot.now(),
+    modelName: config.decisionModel,
+    maxTokens: 96,
   });
 
   // Build context-aware prompt
@@ -1012,6 +1034,8 @@ function callReplyModel(session, sessionKey, config, useSearch = false) {
     createdAt: nbot.now(),
     usedImages,
     noImageRetry: false,
+    modelName: useSearch && config.enableWebsearch ? config.websearchModel : config.replyModel,
+    maxTokens: 256,
   });
 
   if (useSearch && config.enableWebsearch) {
@@ -1033,14 +1057,6 @@ function handleDecisionResult(requestInfo, success, content) {
   const { sessionKey, userId, groupId, message, mentioned, items, groupContext } = requestInfo;
   const config = getConfig();
   pendingDecisionSessions.delete(sessionKey);
-
-  function maskSensitive(text) {
-    return String(text || "")
-      // mask long digit sequences (QQ/IDs/etc)
-      .replace(/\d{5,}/g, "***")
-      .replace(/\s+/g, " ")
-      .trim();
-  }
 
   function parseDecision(raw) {
     const text = String(raw || "").trim();
@@ -1142,7 +1158,7 @@ function handleDecisionResult(requestInfo, success, content) {
 
     // Strict mode: any other non-JSON response is treated as NO (avoid false positives).
     nbot.log.warn(
-      `[smart-assist] decision parse failed mentioned=${mentioned ? "Y" : "N"} raw=${maskSensitive(text).slice(0, 220)}`
+      `[smart-assist] decision parse failed mentioned=${mentioned ? "Y" : "N"} raw=${maskSensitiveForLog(text).slice(0, 220)}`
     );
     return { action: "IGNORE", confidence: 0, reason: "non_json", useSearch: false, topic: "", needClarify: false };
   }
@@ -1187,7 +1203,7 @@ function handleDecisionResult(requestInfo, success, content) {
   const shouldReply = action === "REPLY";
 
   nbot.log.info(
-    `[smart-assist] action=${action} conf=${parsed.confidence.toFixed(2)} reply=${shouldReply ? "Y" : "N"} mentioned=${mentioned ? "Y" : "N"} search=${parsed.useSearch ? "Y" : "N"} clarify=${parsed.needClarify ? "Y" : "N"} reason=${parsed.reason || "-"} text=${maskSensitive(sanitizeMessageForLlm(String(message || ""), null)).slice(0, 80)}`
+    `[smart-assist] action=${action} conf=${parsed.confidence.toFixed(2)} reply=${shouldReply ? "Y" : "N"} mentioned=${mentioned ? "Y" : "N"} search=${parsed.useSearch ? "Y" : "N"} clarify=${parsed.needClarify ? "Y" : "N"} reason=${parsed.reason || "-"} text=${maskSensitiveForLog(sanitizeMessageForLlm(String(message || ""), null)).slice(0, 80)}`
   );
 
   if (!shouldReply) {
@@ -1270,9 +1286,9 @@ function handleReplyResult(requestInfo, success, content) {
   const raw = String(content || "");
   const rawLen = raw.length;
   const hasControl = /[\u0000-\u001F\u007F]/.test(raw);
-  if (hasControl || rawLen <= 4) {
+  if (hasControl || rawLen <= 12) {
     nbot.log.warn(
-      `[smart-assist] reply_raw len=${rawLen} ctl=${hasControl ? "Y" : "N"} usedImages=${requestInfo.usedImages ? "Y" : "N"}`
+      `[smart-assist] reply_raw len=${rawLen} ctl=${hasControl ? "Y" : "N"} usedImages=${requestInfo.usedImages ? "Y" : "N"} model=${requestInfo.modelName || "-"} maxTok=${requestInfo.maxTokens || "-"} raw=${escapeForLog(raw, 500)}`
     );
   }
 
@@ -1288,6 +1304,8 @@ function handleReplyResult(requestInfo, success, content) {
         createdAt: nbot.now(),
         usedImages: false,
         noImageRetry: true,
+        modelName: config.replyModel,
+        maxTokens: 256,
       });
       nbot.callLlmChat(requestId, retryMessages, {
         modelName: config.replyModel,
@@ -1320,6 +1338,8 @@ function handleReplyResult(requestInfo, success, content) {
       type: "reply",
       sessionKey,
       createdAt: nbot.now(),
+      modelName: config.replyModel,
+      maxTokens: 80,
     });
 
     const retryMessages = [
@@ -1337,6 +1357,11 @@ function handleReplyResult(requestInfo, success, content) {
       maxTokens: 80,
     });
     return;
+  }
+  if (cleaned.length <= 8 || cleaned.length >= config.replyMaxChars - 2) {
+    nbot.log.info(
+      `[smart-assist] reply_cleaned len=${cleaned.length}/${config.replyMaxChars} usedImages=${requestInfo.usedImages ? "Y" : "N"} model=${requestInfo.modelName || "-"} rawLen=${rawLen} cleaned=${escapeForLog(cleaned, 160)} raw=${escapeForLog(raw, 500)}`
+    );
   }
   addMessageToSession(session, "assistant", cleaned);
   session.turnCount++;

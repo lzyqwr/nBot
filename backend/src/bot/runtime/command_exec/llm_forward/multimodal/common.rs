@@ -4,7 +4,7 @@ use serde_json::json;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::bot::runtime::api::send_reply;
 use crate::bot::runtime::BotRuntime;
@@ -456,6 +456,116 @@ pub(in super::super::super) async fn call_chat_completions(
     request_body: &serde_json::Value,
     max_request_bytes: u64,
 ) -> Result<String, LlmCallError> {
+    fn mask_long_digits_for_log(input: &str) -> String {
+        let mut out = String::with_capacity(input.len());
+        let mut run = String::new();
+        for ch in input.chars() {
+            if ch.is_ascii_digit() {
+                run.push(ch);
+                continue;
+            }
+            if !run.is_empty() {
+                if run.len() >= 5 {
+                    out.push_str("***");
+                } else {
+                    out.push_str(&run);
+                }
+                run.clear();
+            }
+            out.push(ch);
+        }
+        if !run.is_empty() {
+            if run.len() >= 5 {
+                out.push_str("***");
+            } else {
+                out.push_str(&run);
+            }
+        }
+        out
+    }
+
+    fn compact_for_log(input: &str, max_len: usize) -> String {
+        let s = input
+            .replace('\r', " ")
+            .replace('\n', " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let masked = mask_long_digits_for_log(&s);
+        if masked.len() <= max_len {
+            return masked;
+        }
+        masked.chars().take(max_len).collect::<String>() + "..."
+    }
+
+    fn extract_content_from_choice(choice: &serde_json::Value) -> Option<String> {
+        let message = choice.get("message")?;
+        let content = message.get("content")?;
+        match content {
+            serde_json::Value::String(s) => Some(s.to_string()),
+            serde_json::Value::Array(parts) => {
+                let mut out = String::new();
+                for part in parts {
+                    match part {
+                        serde_json::Value::String(s) => out.push_str(s),
+                        serde_json::Value::Object(map) => {
+                            if let Some(t) = map.get("text").and_then(|v| v.as_str()) {
+                                out.push_str(t);
+                            } else if let Some(t) = map.get("content").and_then(|v| v.as_str()) {
+                                out.push_str(t);
+                            } else if let Some(t) = map.get("value").and_then(|v| v.as_str()) {
+                                out.push_str(t);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if out.trim().is_empty() {
+                    None
+                } else {
+                    Some(out)
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn extract_chat_content(v: &serde_json::Value) -> Option<String> {
+        // OpenAI Chat Completions format
+        if let Some(choice) = v.get("choices").and_then(|c| c.get(0)) {
+            if let Some(content) = extract_content_from_choice(choice) {
+                return Some(content);
+            }
+            // Legacy (some gateways still return choices[0].text)
+            if let Some(text) = choice.get("text").and_then(|t| t.as_str()) {
+                if !text.trim().is_empty() {
+                    return Some(text.to_string());
+                }
+            }
+        }
+
+        // OpenAI Responses API-like format fallback
+        if let Some(output) = v.get("output").and_then(|o| o.get(0)) {
+            if let Some(content) = output
+                .get("content")
+                .and_then(|c| c.get(0))
+                .and_then(|c| c.get("text"))
+                .and_then(|t| t.as_str())
+            {
+                if !content.trim().is_empty() {
+                    return Some(content.to_string());
+                }
+            }
+        }
+        if let Some(text) = v.get("output_text").and_then(|t| t.as_str()) {
+            if !text.trim().is_empty() {
+                return Some(text.to_string());
+            }
+        }
+
+        None
+    }
+
     let client = reqwest::Client::new();
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
 
@@ -502,13 +612,26 @@ pub(in super::super::super) async fn call_chat_completions(
 
     let v: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| LlmCallError::Parse(e.to_string()))?;
-    v.get("choices")
-        .and_then(|c| c.get(0))
-        .and_then(|c| c.get("message"))
-        .and_then(|m| m.get("content"))
-        .and_then(|c| c.as_str())
-        .map(|s| s.to_string())
-        .ok_or(LlmCallError::MissingContent)
+    let content = extract_chat_content(&v).ok_or(LlmCallError::MissingContent)?;
+
+    // Debug suspiciously short outputs: print a compact preview of the raw response (redacted).
+    let trimmed = content.trim();
+    if trimmed.chars().count() <= 6 && text.len() > 200 {
+        let finish_reason = v
+            .get("choices")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("finish_reason"))
+            .and_then(|f| f.as_str())
+            .unwrap_or("");
+        warn!(
+            "LLM short content (len={} finish_reason={}): raw={}",
+            trimmed.chars().count(),
+            finish_reason,
+            compact_for_log(&text, 700)
+        );
+    }
+
+    Ok(content)
 }
 
 /// Tavily 搜索工具定义
@@ -835,17 +958,39 @@ async fn call_with_tavily_tool_loop(
 
         // 没有 tool_calls 或 finish_reason 是 stop，返回内容
         if finish_reason == "stop" || finish_reason == "end_turn" || finish_reason.is_empty() {
-            return message
-                .get("content")
-                .and_then(|c| c.as_str())
-                .map(|s| s.to_string())
-                .ok_or(LlmCallError::MissingContent);
+            if let Some(content) = message.get("content") {
+                if let Some(s) = content.as_str() {
+                    return Ok(s.to_string());
+                }
+                if let Some(parts) = content.as_array() {
+                    let mut out = String::new();
+                    for part in parts {
+                        if let Some(s) = part.as_str() {
+                            out.push_str(s);
+                            continue;
+                        }
+                        if let Some(obj) = part.as_object() {
+                            if let Some(t) = obj.get("text").and_then(|v| v.as_str()) {
+                                out.push_str(t);
+                            } else if let Some(t) = obj.get("content").and_then(|v| v.as_str()) {
+                                out.push_str(t);
+                            }
+                        }
+                    }
+                    if !out.trim().is_empty() {
+                        return Ok(out);
+                    }
+                }
+            }
+            return Err(LlmCallError::MissingContent);
         }
 
         // 其他情况也尝试返回内容
-        if let Some(content) = message.get("content").and_then(|c| c.as_str()) {
-            if !content.is_empty() {
-                return Ok(content.to_string());
+        if let Some(content) = message.get("content") {
+            if let Some(s) = content.as_str() {
+                if !s.trim().is_empty() {
+                    return Ok(s.to_string());
+                }
             }
         }
     }
