@@ -1,5 +1,5 @@
 /**
- * nBot Smart Assistant Plugin v2.2.22
+ * nBot Smart Assistant Plugin v2.2.23
  * Auto-detects if user needs help, enters multi-turn conversation mode,
  * replies in a QQ-friendly style (single-line, low-noise)
  *
@@ -33,6 +33,11 @@ const pendingReplySessions = new Set();
 // Decision batching (reduce LLM calls while still judging every message)
 const decisionBatches = new Map(); // Map<sessionKey, { userId:number, groupId:number, items: {t:number,text:string,mentioned:boolean}[] }>
 const DECISION_BATCH_MAX_ITEMS = 8;
+
+// LLM max token budgets (keep high to avoid "thinking" consuming output; length is still controlled by one-line formatting)
+const DECISION_MAX_TOKENS = 256;
+const REPLY_MAX_TOKENS = 1024;
+const REPLY_RETRY_MAX_TOKENS = 256;
 
 // Recent images (help the model resolve "the image above")
 const recentGroupImages = new Map(); // Map<groupId, { t:number, urls:string[] }>
@@ -832,7 +837,7 @@ function callDecisionModel(sessionKey, userId, groupId, message, mentioned, item
     formatRetry: !!options.formatRetry,
     createdAt: nbot.now(),
     modelName: config.decisionModel,
-    maxTokens: 96,
+    maxTokens: DECISION_MAX_TOKENS,
   });
 
   // Build context-aware prompt
@@ -892,7 +897,7 @@ function callDecisionModel(sessionKey, userId, groupId, message, mentioned, item
 
   nbot.callLlmChat(requestId, messages, {
     modelName: config.decisionModel,
-    maxTokens: 96,
+    maxTokens: DECISION_MAX_TOKENS,
   });
 }
 
@@ -1037,19 +1042,19 @@ function callReplyModel(session, sessionKey, config, useSearch = false) {
     usedImages,
     noImageRetry: false,
     modelName: useSearch && config.enableWebsearch ? config.websearchModel : config.replyModel,
-    maxTokens: 256,
+    maxTokens: REPLY_MAX_TOKENS,
   });
 
   if (useSearch && config.enableWebsearch) {
     nbot.callLlmChatWithSearch(requestId, messages, {
       modelName: config.websearchModel,
-      maxTokens: 256,
+      maxTokens: REPLY_MAX_TOKENS,
       enableSearch: true,
     });
   } else {
     nbot.callLlmChat(requestId, messages, {
       modelName: config.replyModel,
-      maxTokens: 256,
+      maxTokens: REPLY_MAX_TOKENS,
     });
   }
 }
@@ -1316,11 +1321,11 @@ function handleReplyResult(requestInfo, success, content) {
         usedImages: false,
         noImageRetry: true,
         modelName: config.replyModel,
-        maxTokens: 256,
+        maxTokens: REPLY_MAX_TOKENS,
       });
       nbot.callLlmChat(requestId, retryMessages, {
         modelName: config.replyModel,
-        maxTokens: 256,
+        maxTokens: REPLY_MAX_TOKENS,
       });
       return;
     }
@@ -1351,7 +1356,7 @@ function handleReplyResult(requestInfo, success, content) {
       sessionKey,
       createdAt: nbot.now(),
       modelName: config.replyModel,
-      maxTokens: 80,
+      maxTokens: REPLY_RETRY_MAX_TOKENS,
     });
 
     const retryMessages = [
@@ -1366,7 +1371,7 @@ function handleReplyResult(requestInfo, success, content) {
 
     nbot.callLlmChat(requestId, retryMessages, {
       modelName: config.replyModel,
-      maxTokens: 80,
+      maxTokens: REPLY_RETRY_MAX_TOKENS,
     });
     return;
   }
@@ -1493,7 +1498,7 @@ function cleanupStaleRequests(config) {
 // Plugin object
 return {
   onEnable() {
-  nbot.log.info("Smart Assistant Plugin v2.2.22 enabled");
+  nbot.log.info("Smart Assistant Plugin v2.2.23 enabled");
   },
 
   onDisable() {
