@@ -1481,7 +1481,7 @@ function cleanupStaleRequests(config) {
 // Plugin object
 return {
   onEnable() {
-    nbot.log.info("Smart Assistant Plugin v2.2.17 enabled");
+  nbot.log.info("Smart Assistant Plugin v2.2.22 enabled");
   },
 
   onDisable() {
