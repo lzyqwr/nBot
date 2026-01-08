@@ -4,6 +4,19 @@ export function getConfig() {
     Array.isArray(cfg.interrupt_keywords) && cfg.interrupt_keywords.length
       ? cfg.interrupt_keywords
       : ["我明白了", "结束", "停止"];
+
+  // Some upstreams default to a very small max_tokens (e.g. 256). For models that spend tokens on hidden reasoning,
+  // this can truncate even tiny JSON outputs. Provide a safe default while allowing users to disable it by setting
+  // the value to null/0 in config.
+  const normalizeMaxTokens = (v, fallback) => {
+    if (v === null) return null;
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return Math.max(64, Math.min(8192, Math.floor(n || fallback)));
+  };
+  const decisionMaxTokens = normalizeMaxTokens(cfg.decision_max_tokens ?? 2048, 2048);
+  const replyMaxTokens = normalizeMaxTokens(cfg.reply_max_tokens ?? 2048, 2048);
+  const replyRetryMaxTokens = normalizeMaxTokens(cfg.reply_retry_max_tokens ?? 512, 512);
   const decisionSystemPrompt =
     cfg.decision_system_prompt ||
     [
@@ -85,5 +98,8 @@ export function getConfig() {
     replyMaxChars: 20,
     replyMaxParts: 3,
     replyPartsSeparator: "||",
+    decisionMaxTokens,
+    replyMaxTokens,
+    replyRetryMaxTokens,
   };
 }

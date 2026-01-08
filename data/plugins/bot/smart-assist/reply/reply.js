@@ -185,17 +185,17 @@ export function callReplyModel(session, sessionKey, config, useSearch = false) {
     usedImages,
     noImageRetry: false,
     modelName: useSearch && config.enableWebsearch ? config.websearchModel : config.replyModel,
+    maxTokens: config.replyMaxTokens ?? null,
   });
 
   if (useSearch && config.enableWebsearch) {
-    nbot.callLlmChatWithSearch(requestId, messages, {
-      modelName: config.websearchModel,
-      enableSearch: true,
-    });
+    const callOptions = { modelName: config.websearchModel, enableSearch: true };
+    if (config.replyMaxTokens) callOptions.maxTokens = config.replyMaxTokens;
+    nbot.callLlmChatWithSearch(requestId, messages, callOptions);
   } else {
-    nbot.callLlmChat(requestId, messages, {
-      modelName: config.replyModel,
-    });
+    const callOptions = { modelName: config.replyModel };
+    if (config.replyMaxTokens) callOptions.maxTokens = config.replyMaxTokens;
+    nbot.callLlmChat(requestId, messages, callOptions);
   }
 }
 
@@ -235,10 +235,11 @@ export function handleReplyResult(requestInfo, success, content) {
         usedImages: false,
         noImageRetry: true,
         modelName: config.replyModel,
+        maxTokens: config.replyMaxTokens ?? null,
       });
-      nbot.callLlmChat(requestId, retryMessages, {
-        modelName: config.replyModel,
-      });
+      const callOptions = { modelName: config.replyModel };
+      if (config.replyMaxTokens) callOptions.maxTokens = config.replyMaxTokens;
+      nbot.callLlmChat(requestId, retryMessages, callOptions);
       return;
     }
 
@@ -267,6 +268,7 @@ export function handleReplyResult(requestInfo, success, content) {
       sessionKey,
       createdAt: nbot.now(),
       modelName: config.replyModel,
+      maxTokens: config.replyRetryMaxTokens ?? null,
     });
 
     const retryMessages = [
@@ -279,9 +281,9 @@ export function handleReplyResult(requestInfo, success, content) {
       ...session.messages,
     ];
 
-    nbot.callLlmChat(requestId, retryMessages, {
-      modelName: config.replyModel,
-    });
+    const callOptions = { modelName: config.replyModel };
+    if (config.replyRetryMaxTokens) callOptions.maxTokens = config.replyRetryMaxTokens;
+    nbot.callLlmChat(requestId, retryMessages, callOptions);
     return;
   }
 
@@ -297,6 +299,7 @@ export function handleReplyResult(requestInfo, success, content) {
       createdAt: nbot.now(),
       modelName: config.replyModel,
       compactRetry: true,
+      maxTokens: config.replyRetryMaxTokens ?? null,
     });
 
     const retryMessages = [
@@ -309,9 +312,9 @@ export function handleReplyResult(requestInfo, success, content) {
       ...session.messages,
     ];
 
-    nbot.callLlmChat(requestId, retryMessages, {
-      modelName: config.replyModel,
-    });
+    const callOptions = { modelName: config.replyModel };
+    if (config.replyRetryMaxTokens) callOptions.maxTokens = config.replyRetryMaxTokens;
+    nbot.callLlmChat(requestId, retryMessages, callOptions);
     return;
   }
 
@@ -331,6 +334,7 @@ export function handleReplyResult(requestInfo, success, content) {
         createdAt: nbot.now(),
         modelName: config.replyModel,
         fragmentRetry: true,
+        maxTokens: config.replyRetryMaxTokens ?? null,
       });
 
       const retryMessages = [
@@ -343,9 +347,9 @@ export function handleReplyResult(requestInfo, success, content) {
         ...session.messages,
       ];
 
-      nbot.callLlmChat(requestId, retryMessages, {
-        modelName: config.replyModel,
-      });
+      const callOptions = { modelName: config.replyModel };
+      if (config.replyRetryMaxTokens) callOptions.maxTokens = config.replyRetryMaxTokens;
+      nbot.callLlmChat(requestId, retryMessages, callOptions);
       return;
     }
 

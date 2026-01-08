@@ -78,6 +78,7 @@ export function callDecisionModel(
     formatRetry: !!options.formatRetry,
     createdAt: nbot.now(),
     modelName: config.decisionModel,
+    maxTokens: config.decisionMaxTokens ?? null,
   });
 
   // Build context-aware prompt
@@ -148,9 +149,9 @@ export function callDecisionModel(
     },
   ];
 
-  nbot.callLlmChat(requestId, messages, {
-    modelName: config.decisionModel,
-  });
+  const callOptions = { modelName: config.decisionModel };
+  if (config.decisionMaxTokens) callOptions.maxTokens = config.decisionMaxTokens;
+  nbot.callLlmChat(requestId, messages, callOptions);
 }
 
 export function handleGroupInfoResponse(requestInfo, infoType, success, data) {
