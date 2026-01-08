@@ -18,6 +18,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
+# Cargo network tuning / mirrors (optional).
+# - Default keeps using crates.io; override CARGO_REGISTRY to use a faster mirror (e.g. sparse+https://rsproxy.cn/index/)
+# - Increase low-speed timeouts to avoid flaky networks breaking Docker builds.
+ARG CARGO_REGISTRY="sparse+https://index.crates.io/"
+ARG CARGO_HTTP_TIMEOUT="600"
+ARG CARGO_HTTP_LOW_SPEED_LIMIT="1"
+ARG CARGO_HTTP_LOW_SPEED_TIME="600"
+ENV CARGO_HTTP_TIMEOUT=${CARGO_HTTP_TIMEOUT}
+ENV CARGO_HTTP_LOW_SPEED_LIMIT=${CARGO_HTTP_LOW_SPEED_LIMIT}
+ENV CARGO_HTTP_LOW_SPEED_TIME=${CARGO_HTTP_LOW_SPEED_TIME}
+RUN mkdir -p /root/.cargo && \
+    printf "[source.crates-io]\nreplace-with = 'mirror'\n\n[source.mirror]\nregistry = \"%s\"\n" "${CARGO_REGISTRY}" > /root/.cargo/config.toml
+
 # Cache dependencies: build with a dummy backend first (only invalidated by Cargo.* changes)
 COPY Cargo.toml Cargo.lock ./
 COPY backend/Cargo.toml backend/Cargo.toml
