@@ -452,10 +452,10 @@ export function handleReplyResult(requestInfo, success, content) {
     session.forceMentionNextReply = false;
     session.lastMentionAt = now;
   }
-  finalParts.forEach((p, idx) => {
-    const msg = idx === 0 ? `${prefix}${p}` : p;
-    if (msg) nbot.sendReply(session.userId, session.groupId || 0, msg);
-  });
+  // Send as a single message to avoid out-of-order delivery in some QQ setups.
+  const combined = finalParts.join(" ").trim();
+  const msg = prefix ? `${prefix}${combined}` : combined;
+  if (msg) nbot.sendReply(session.userId, session.groupId || 0, msg);
   session.lastBotReplyAt = now;
   session.pendingUserInput = false;
 
