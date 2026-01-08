@@ -111,6 +111,25 @@ export function handleDecisionResult(requestInfo, success, content) {
       };
     }
 
+    // 4) partial JSON salvage: some upstreams return truncated JSON (e.g. finish_reason=length)
+    // like `{"action":"IGNORE","confidence":0.9` (missing closing brace/fields).
+    const actionMatch = candidate.match(/"action"\s*:\s*"([^"]+)"/i);
+    if (actionMatch && actionMatch[1]) {
+      const actionRaw = String(actionMatch[1]).trim().toUpperCase();
+      const confMatch = candidate.match(/"confidence"\s*:\s*([0-9]+(?:\.[0-9]+)?)/i);
+      const confidence = confMatch ? Number(confMatch[1]) : 0;
+      const action =
+        actionRaw === "REPLY" || actionRaw === "IGNORE" || actionRaw === "REACT" ? actionRaw : "IGNORE";
+      return {
+        action,
+        confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0,
+        reason: "partial_json",
+        useSearch: false,
+        topic: "",
+        needClarify: false,
+      };
+    }
+
     // Strict mode: any other non-JSON response is treated as NO (avoid false positives).
     nbot.log.warn(
       `[smart-assist] decision parse failed mentioned=${mentioned ? "Y" : "N"} raw=${maskSensitiveForLog(text).slice(0, 220)}`
@@ -231,4 +250,3 @@ export function handleDecisionResult(requestInfo, success, content) {
   // Start assisting immediately
   callReplyModel(session, sessionKey, config, parsed.useSearch);
 }
-

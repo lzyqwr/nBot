@@ -1,4 +1,6 @@
-export const DECISION_MAX_TOKENS = 256;
+// Decision output must be strict JSON; some "reasoning" models can spend most tokens on hidden reasoning and
+// truncate the visible JSON with `finish_reason=length` when max_tokens is too small.
+export const DECISION_MAX_TOKENS = 1024;
 export const REPLY_MAX_TOKENS = 1024;
 export const REPLY_RETRY_MAX_TOKENS = 256;
 
@@ -89,4 +91,3 @@ export function getConfig() {
     replyPartsSeparator: "||",
   };
 }
-
