@@ -138,7 +138,14 @@ fn extract_best_text_from_zip(
     keywords: &[String],
 ) -> Result<(String, Option<String>, u64, bool), String> {
     let file = std::fs::File::open(path).map_err(|e| format!("open zip failed: {e}"))?;
-    let mut archive = ZipArchive::new(file).map_err(|e| format!("parse zip failed: {e}"))?;
+    let mut archive = ZipArchive::new(file).map_err(|e| {
+        let msg = e.to_string().to_lowercase();
+        if msg.contains("eocd") {
+            format!("zip 文件不完整或损坏（EOCD 缺失）：{e}")
+        } else {
+            format!("parse zip failed: {e}")
+        }
+    })?;
 
     let mut candidates: Vec<ExtractCandidate> = Vec::new();
     for i in 0..archive.len() {
@@ -296,20 +303,28 @@ pub(super) async fn download_archive_text(
     max_files: u32,
     keywords: &[String],
 ) -> Result<(TempFileGuard, String, DocumentMeta), String> {
-    let (guard, bin_meta) = download_binary_to_temp(url, file_name, timeout_ms, max_download_bytes).await?;
-
-    let kind = guess_kind(url, bin_meta.file_name.as_deref().or(file_name)).ok_or_else(|| {
-        "不支持的压缩格式（仅支持 .zip / .tar / .tar.gz(.tgz) / .gz）".to_string()
-    })?;
-
-    let path = guard.path.clone();
-    let keywords = keywords.to_vec();
     let max_extract_bytes = max_extract_bytes.clamp(1_000_000, 1_000_000_000);
     let max_file_bytes = max_file_bytes.clamp(100_000, 200_000_000);
     let max_files = max_files.clamp(1, 500);
 
-    let (text, ext, extracted_bytes, truncated) = tokio::task::spawn_blocking(move || {
-        match kind {
+    let mut last_err: Option<String> = None;
+    for attempt in 0..2 {
+        let (guard, bin_meta) = download_binary_to_temp(url, file_name, timeout_ms, max_download_bytes).await?;
+        if bin_meta.truncated {
+            return Err(format!(
+                "压缩包下载被截断（已下载 {} bytes，达到上限 {} bytes）。请提高 max_download_bytes 或上传更小的压缩包。",
+                bin_meta.size_bytes, max_download_bytes
+            ));
+        }
+
+        let kind = guess_kind(url, bin_meta.file_name.as_deref().or(file_name)).ok_or_else(|| {
+            "不支持的压缩格式（仅支持 .zip / .tar / .tar.gz(.tgz) / .gz）".to_string()
+        })?;
+
+        let path = guard.path.clone();
+        let keywords = keywords.to_vec();
+
+        let extracted = tokio::task::spawn_blocking(move || match kind {
             ArchiveKind::Zip => extract_best_text_from_zip(
                 &path,
                 max_extract_bytes,
@@ -334,17 +349,32 @@ pub(super) async fn download_archive_text(
                 &keywords,
             ),
             ArchiveKind::Gz => extract_best_text_from_gz_path(&path, max_extract_bytes, max_file_bytes),
+        })
+        .await
+        .map_err(|e| format!("解压任务失败: {e}"))?;
+
+        match extracted {
+            Ok((text, ext, extracted_bytes, truncated)) => {
+                let meta = DocumentMeta {
+                    title: String::new(),
+                    file_ext: ext,
+                    size_bytes: Some(extracted_bytes),
+                    truncated,
+                };
+                return Ok((guard, text, meta));
+            }
+            Err(e) => {
+                // Some zip downloads can be cut short by network, producing "EOCD" errors.
+                // Retry once to reduce flakiness; if it still fails, surface the error.
+                let lower = e.to_lowercase();
+                last_err = Some(e);
+                if attempt == 0 && lower.contains("eocd") {
+                    continue;
+                }
+                break;
+            }
         }
-    })
-    .await
-    .map_err(|e| format!("解压任务失败: {e}"))??;
+    }
 
-    let meta = DocumentMeta {
-        title: String::new(),
-        file_ext: ext,
-        size_bytes: Some(extracted_bytes),
-        truncated: truncated || bin_meta.truncated,
-    };
-
-    Ok((guard, text, meta))
+    Err(last_err.unwrap_or_else(|| "解压失败".to_string()))
 }

@@ -102,7 +102,7 @@ function getConfig() {
     max_content_length: clampNumber(cfg.max_content_length, 50000, 1000, 200000),
     wait_timeout_seconds: clampNumber(cfg.wait_timeout_seconds, 120, 10, 600),
     file_url_timeout_seconds: clampNumber(cfg.file_url_timeout_seconds, 15, 5, 120),
-    max_download_bytes: clampNumber(cfg.max_download_bytes, 30000000, 1048576, 500000000),
+    max_download_bytes: clampNumber(cfg.max_download_bytes, 80000000, 1048576, 500000000),
     max_extract_bytes: clampNumber(cfg.max_extract_bytes, 120000000, 10485760, 1000000000),
     max_file_bytes: clampNumber(cfg.max_file_bytes, 15000000, 1048576, 200000000),
     allow_archive: cfg.allow_archive !== false,

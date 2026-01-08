@@ -156,6 +156,16 @@ pub(in super::super) async fn download_binary_to_temp(
         return Err(format!("Download failed: HTTP {}", resp.status()));
     }
 
+    let content_length = resp.content_length();
+    if let Some(len) = content_length {
+        if len > max_bytes {
+            return Err(format!(
+                "下载文件过大：Content-Length={} bytes，超过限制 {} bytes",
+                len, max_bytes
+            ));
+        }
+    }
+
     let mut file = tokio::fs::File::create(&guard.path)
         .await
         .map_err(|e| format!("Create temp file failed: {e}"))?;
@@ -186,6 +196,15 @@ pub(in super::super) async fn download_binary_to_temp(
 
         if truncated_by_bytes {
             break;
+        }
+    }
+
+    if let Some(len) = content_length {
+        if !truncated_by_bytes && downloaded < len {
+            return Err(format!(
+                "下载不完整：期望 {} bytes，实际 {} bytes（可能链接过期或网络中断）",
+                len, downloaded
+            ));
         }
     }
 
