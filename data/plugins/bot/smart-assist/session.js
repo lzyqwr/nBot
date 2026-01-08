@@ -42,19 +42,28 @@ export function cleanupExpiredSessions(timeoutMs) {
 // Create new session
 export function createSession(sessionKey, userId, groupId, initialMessage, options = {}) {
   const config = getConfig();
+  const now = nbot.now();
   const session = {
     userId,
     groupId,
     messages: [],
     turnCount: 0,
-    lastActivity: nbot.now(),
+    lastActivity: now,
     state: "active",
     initialMessage,
     maxTurns: config.maxTurns,
     groupContext: null, // Will be populated with group announcements and history
     mentionUserOnFirstReply: !!options.mentionUserOnFirstReply,
     mentionUserOnEveryReply: !!options.mentionUserOnEveryReply,
+    startedByMention: !!options.startedByMention,
     pendingUserInput: false, // User sent new messages while a reply was in-flight
+    userSeq: 0,
+    lastUserAt: 0,
+    lastUserMentionedAt: 0,
+    lastAssistantAt: 0,
+    lastBotReplyAt: 0,
+    lastMentionAt: 0,
+    forceMentionNextReply: false,
     lastImageUrls: [],
     lastImageAt: 0,
     lastVideoUrls: [],
@@ -68,9 +77,20 @@ export function createSession(sessionKey, userId, groupId, initialMessage, optio
 }
 
 // Add message to session
-export function addMessageToSession(session, role, content) {
+export function addMessageToSession(session, role, content, meta = {}) {
+  const now = nbot.now();
   session.messages.push({ role, content });
-  session.lastActivity = nbot.now();
+  session.lastActivity = now;
+  if (role === "user") {
+    session.userSeq = Number(session.userSeq || 0) + 1;
+    session.lastUserAt = now;
+    if (meta && meta.mentioned) {
+      session.lastUserMentionedAt = now;
+      session.forceMentionNextReply = true;
+    }
+  } else if (role === "assistant") {
+    session.lastAssistantAt = now;
+  }
 }
 
 // End session and update cooldown

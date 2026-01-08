@@ -7,6 +7,7 @@ import {
   pendingRequests,
   sessions,
 } from "./state.js";
+import { endSession } from "./session.js";
 
 export function cleanupStaleRequests(config) {
   const now = nbot.now();
@@ -25,7 +26,18 @@ export function cleanupStaleRequests(config) {
       pendingReplySessions.delete(sessionKey);
       const session = sessions.get(sessionKey);
       if (session && session.state === "active") {
-        nbot.sendReply(session.userId, session.groupId || 0, "回复超时，请再说一次。");
+        const shouldNotify = !!session.startedByMention || !!session.forceMentionNextReply;
+        if (shouldNotify) {
+          const at = session.groupId ? nbot.at(session.userId) : "";
+          const prefix = at ? `${at} ` : "";
+          nbot.sendReply(session.userId, session.groupId || 0, `${prefix}回复超时了，再发一次关键信息？`);
+          session.forceMentionNextReply = false;
+          session.lastMentionAt = nbot.now();
+          session.lastBotReplyAt = nbot.now();
+        } else {
+          // Auto-triggered sessions: don't spam on timeouts.
+          endSession(sessionKey);
+        }
       }
     }
 
@@ -59,4 +71,3 @@ export function cleanupStaleRequests(config) {
     nbot.log.warn(`Context timeout: ${requestId}`);
   }
 }
-

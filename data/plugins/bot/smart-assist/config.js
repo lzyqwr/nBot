@@ -7,19 +7,18 @@ export function getConfig() {
 
   // Some upstreams default to a very small max_tokens (e.g. 256). For models that spend tokens on hidden reasoning,
   // this can truncate even tiny JSON outputs. Provide a safe default while allowing users to disable it by setting
-  // the value to null/0 in config.
+  // the value to null/0 in config (in practice we still keep a large default to avoid truncation).
   const normalizeMaxTokens = (v, fallback) => {
-    if (v === null) return null;
     const n = Number(v);
-    if (!Number.isFinite(n) || n <= 0) return null;
-    return Math.max(64, Math.min(8192, Math.floor(n || fallback)));
+    if (!Number.isFinite(n) || n <= 0) return Math.max(256, Math.min(8192, Math.floor(fallback)));
+    return Math.max(256, Math.min(8192, Math.floor(n)));
   };
   const decisionMaxTokens = normalizeMaxTokens(cfg.decision_max_tokens ?? 2048, 2048);
   const replyMaxTokens = normalizeMaxTokens(cfg.reply_max_tokens ?? 2048, 2048);
-  const replyRetryMaxTokens = normalizeMaxTokens(cfg.reply_retry_max_tokens ?? 512, 512);
+  const replyRetryMaxTokens = normalizeMaxTokens(cfg.reply_retry_max_tokens ?? 1024, 1024);
 
   const mentionUserOnFirstReply = cfg.mention_user_on_first_reply !== false;
-  const mentionUserOnEveryReply = cfg.mention_user_on_every_reply !== false;
+  const mentionUserOnEveryReply = cfg.mention_user_on_every_reply === true;
   const alwaysReplyInSession = cfg.always_reply_in_session !== false;
   const decisionSystemPrompt =
     cfg.decision_system_prompt ||
@@ -34,7 +33,7 @@ export function getConfig() {
       "- 如果候选消息是【回复别人】的跟帖（例如带有“（回复内容：...）”），且没有 @ 机器人：通常是在接别人话，一律 action=IGNORE（机器人不要插嘴）。",
       "- 如果【最近群聊片段】里已经有人给出明确答案/解决步骤/指路（例如“群文件/看公告/看置顶/去某某页面”），通常 action=IGNORE（机器人不要抢答/复读）。",
       "- 起哄/调戏/让机器人叫称呼/要机器人表白/刷屏/群聊闲聊，通常 action=IGNORE。",
-      "- 只有媒体/占位符（如“[图片] / [视频] / [语音] / [卡片]”）且没有任何文字内容，一律 action=IGNORE（不要去‘说明无法判断’）。",
+      "- 只有媒体/占位符（如“[图片] / [视频] / [语音] / [卡片]”）且没有任何文字内容：如果【不在会话中】一律 action=IGNORE；如果【处于会话中】且用户明显在补充截图/报错，可 action=REPLY（need_clarify 可为 true）。",
       "- 只有表情/颜文字/一个词/无意义应答（如“哈哈”“？”“。。。”）一律 action=IGNORE。",
       "- 用户在 @ 其他人（而不是 @ 机器人）时，通常是在找那个人说话：除非明确要求机器人回答，否则 action=IGNORE。",
       "",
@@ -59,7 +58,8 @@ export function getConfig() {
       "",
       "输出要求（硬性）：",
       "- 只输出【一行】中文短句；禁止换行；禁止 Markdown/列表/编号/加粗/代码块。",
-      "- 每条消息不超过 20 字；通常输出 2 条，用「||」分隔（仍然同一行）。第 1 条可追问 1 个关键点，第 2 条给可执行步骤；如无需追问，可只输出 1 条步骤。",
+      "- 每条消息不超过 60 字；通常输出 2 条，用「||」分隔（仍然同一行）。第 1 条可追问 1 个关键点，第 2 条给可执行步骤；如无需追问，可只输出 1 条步骤。",
+      "- 如果确实需要，可输出最多 3 条（仍然同一行，用「||」分隔）；不要刷屏式长段落。",
       "- 如果只输出 1 条，必须是「可执行步骤」，不要只问问题。",
       "- 禁止半句碎片（如“建议先/能/然后”）。",
       "- 语气自然像群友：别写长段落、别客服腔、别“为了更好地帮助你…”。",
@@ -90,6 +90,16 @@ export function getConfig() {
       const secs = Number.isFinite(v) ? Math.max(1, Math.min(30, Math.floor(v))) : 5;
       return secs * 1000;
     })(),
+    replyMergeIdleMs: (() => {
+      const v = Number(cfg.reply_merge_seconds ?? 1.2);
+      const secs = Number.isFinite(v) ? Math.max(0, Math.min(5, v)) : 1.2;
+      return Math.floor(secs * 1000);
+    })(),
+    replyMergeMaxMs: (() => {
+      const v = Number(cfg.reply_merge_max_seconds ?? 5);
+      const secs = Number.isFinite(v) ? Math.max(1, Math.min(15, v)) : 5;
+      return Math.floor(secs * 1000);
+    })(),
     decisionSystemPrompt,
     replySystemPrompt,
     interruptKeywords,
@@ -101,7 +111,7 @@ export function getConfig() {
       return Math.max(5, Math.min(100, Math.floor(v)));
     })(),
     // Keep formatting limits internal; don't rely on config for behavior.
-    replyMaxChars: 20,
+    replyMaxChars: 60,
     replyMaxParts: 3,
     replyPartsSeparator: "||",
     decisionMaxTokens,
@@ -110,5 +120,20 @@ export function getConfig() {
     mentionUserOnFirstReply,
     mentionUserOnEveryReply,
     alwaysReplyInSession,
+    mentionCooldownMs: (() => {
+      const v = Number(cfg.mention_cooldown_seconds ?? 30);
+      const secs = Number.isFinite(v) ? Math.max(0, Math.min(600, v)) : 30;
+      return Math.floor(secs * 1000);
+    })(),
+    mentionOnSlowReplyMs: (() => {
+      const v = Number(cfg.mention_on_slow_reply_seconds ?? 6);
+      const secs = Number.isFinite(v) ? Math.max(0, Math.min(60, v)) : 6;
+      return Math.floor(secs * 1000);
+    })(),
+    staleReplyDropMs: (() => {
+      const v = Number(cfg.stale_reply_drop_seconds ?? 2.5);
+      const secs = Number.isFinite(v) ? Math.max(0, Math.min(60, v)) : 2.5;
+      return Math.floor(secs * 1000);
+    })(),
   };
 }

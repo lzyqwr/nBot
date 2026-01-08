@@ -1,5 +1,5 @@
 /**
- * nBot Smart Assistant Plugin v2.2.27
+ * nBot Smart Assistant Plugin v2.2.28
  * Auto-detects if user needs help, enters multi-turn conversation mode,
  * replies in a QQ-friendly style (short, low-noise)
  */
@@ -21,7 +21,8 @@ import {
   noteRecentUserVideos,
 } from "./media.js";
 import { sanitizeMessageForLlm, summarizeMentions } from "./message.js";
-import { callReplyModel, handleReplyResult } from "./reply/reply.js";
+import { handleReplyResult } from "./reply/reply.js";
+import { flushDueReplyBatches, scheduleReplyFlush } from "./reply/batch.js";
 import { checkCooldown, cleanupExpiredSessions, addMessageToSession, createSession, endSession } from "./session.js";
 import {
   resetAllState,
@@ -36,7 +37,7 @@ import { containsKeyword } from "./utils/text.js";
 
 export default {
   onEnable() {
-    nbot.log.info("Smart Assistant Plugin v2.2.27 enabled");
+    nbot.log.info("Smart Assistant Plugin v2.2.28 enabled");
   },
 
   onDisable() {
@@ -50,6 +51,7 @@ export default {
       if (!ctx || ctx.meta_event_type !== "tick") return true;
       const config = getConfig();
       flushDueDecisionBatches(config);
+      flushDueReplyBatches(config);
     } catch (e) {
       nbot.log.warn(`[smart-assist] onMetaEvent error: ${e}`);
     }
@@ -124,15 +126,16 @@ export default {
         }
 
         // Continue conversation (store context).
-        addMessageToSession(session, "user", llmMessage || message);
+        addMessageToSession(session, "user", llmMessage || message, { mentioned: !!mentions.bot });
 
         // In an active session, default to replying every user turn (otherwise it feels "dead").
         if (config.alwaysReplyInSession) {
           if (pendingReplySessions.has(sessionKey)) {
             session.pendingUserInput = true;
+            scheduleReplyFlush(sessionKey, config);
             return true;
           }
-          callReplyModel(session, sessionKey, config, false);
+          scheduleReplyFlush(sessionKey, config);
           return true;
         }
 
@@ -173,14 +176,15 @@ export default {
         const s = createSession(sessionKey, user_id, group_id, seed, {
           mentionUserOnFirstReply: config.mentionUserOnFirstReply,
           mentionUserOnEveryReply: config.mentionUserOnEveryReply,
+          startedByMention: true,
         });
         if (replyCtx && replyCtx.snippet) {
           s.lastReplySnippet = replyCtx.snippet;
           s.lastReplyAt = nbot.now();
         }
-        addMessageToSession(s, "user", seed);
+        addMessageToSession(s, "user", seed, { mentioned: true });
         nbot.log.info("[smart-assist] created new session (mentioned)");
-        callReplyModel(s, sessionKey, config, false);
+        scheduleReplyFlush(sessionKey, config);
         return true;
       }
 

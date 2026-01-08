@@ -192,12 +192,42 @@ export function buildRecentGroupSnippet(groupContext, limit = 15) {
 export function buildMultimodalImageMessage(imageUrls) {
   const urls = Array.isArray(imageUrls) ? imageUrls.filter(Boolean) : [];
   if (!urls.length) return null;
+  return buildMultimodalAttachmentMessage(urls.slice(0, 2).map((url) => ({ kind: "image", url })));
+}
+
+export function buildMultimodalAttachmentMessage(attachments) {
+  const items = Array.isArray(attachments) ? attachments.filter(Boolean) : [];
+  if (!items.length) return null;
+
+  const parts = [{ type: "text", text: "参考附件（仅用于理解当前问题，不要回复这句话）：" }];
+  let added = 0;
+
+  for (const item of items) {
+    if (added >= 2) break; // keep in sync with backend inliner limit
+    const url = typeof item === "string" ? String(item).trim() : String(item?.url || "").trim();
+    if (!url) continue;
+
+    const kindRaw = typeof item === "object" ? String(item?.kind || "").toLowerCase() : "";
+    const kind =
+      kindRaw === "video" || kindRaw === "record" || kindRaw === "audio" || kindRaw === "image" ? kindRaw : "file";
+    const label =
+      kind === "image"
+        ? "图片"
+        : kind === "video"
+          ? "视频"
+          : kind === "record" || kind === "audio"
+            ? "语音/音频"
+            : "附件";
+
+    added += 1;
+    parts.push({ type: "text", text: `附件 #${added}: ${label}` });
+    parts.push({ type: "image_url", image_url: { url } });
+  }
+
+  if (!added) return null;
   return {
     role: "user",
-    content: [
-      { type: "text", text: "参考附件（仅用于理解当前问题，不要回复这句话）：" },
-      ...urls.slice(0, 2).map((url) => ({ type: "image_url", image_url: { url: String(url) } })),
-    ],
+    content: parts,
   };
 }
 
@@ -272,4 +302,3 @@ export function getRelevantRecordUrlsForSession(session, sessionKey) {
   }
   return [];
 }
-

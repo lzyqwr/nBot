@@ -21,6 +21,9 @@ export const pendingReplySessions = new Set();
 export const decisionBatches = new Map(); // Map<sessionKey, { userId:number, groupId:number, items: {...}[] }>
 export const DECISION_BATCH_MAX_ITEMS = 8;
 
+// Reply batching (merge burst messages into 1 reply)
+export const replyBatches = new Map(); // Map<sessionKey, { firstAt:number, lastAt:number }>
+
 // Recent media (help the model resolve "the image above")
 export const recentGroupImages = new Map(); // Map<groupId, { t:number, urls:string[] }>
 export const recentUserImages = new Map(); // Map<sessionKey, { t:number, urls:string[] }>
@@ -45,6 +48,7 @@ export function resetAllState() {
   pendingContextSessions.clear();
   pendingReplySessions.clear();
   decisionBatches.clear();
+  replyBatches.clear();
   recentGroupImages.clear();
   recentUserImages.clear();
   recentGroupVideos.clear();
@@ -53,4 +57,3 @@ export function resetAllState() {
   recentUserRecords.clear();
   requestIdCounter = 0;
 }
-

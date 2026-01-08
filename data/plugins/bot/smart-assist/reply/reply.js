@@ -1,12 +1,13 @@
 import { getConfig } from "../config.js";
 import {
+  buildMultimodalAttachmentMessage,
   buildMultimodalImageMessage,
   getRelevantImageUrlsForSession,
   getRelevantRecordUrlsForSession,
   getRelevantVideoUrlsForSession,
   looksReferentialShortQuestion,
 } from "../media.js";
-import { genRequestId, pendingReplySessions, pendingRequests, sessions } from "../state.js";
+import { genRequestId, pendingReplySessions, pendingRequests, replyBatches, sessions } from "../state.js";
 import { addMessageToSession, endSession } from "../session.js";
 import { escapeForLog } from "../utils/log.js";
 import { stripAllCqSegments } from "../utils/text.js";
@@ -145,23 +146,52 @@ function buildReplyMessages(session, sessionKey, config, attachImages) {
   }
 
   if (attachImages) {
-    const shouldAttachMedia =
-      looksReferentialShortQuestion(lastUserMsg) ||
-      String(lastUserMsg).includes("[图片]") ||
-      String(lastUserMsg).includes("[视频]") ||
-      String(lastUserMsg).includes("[语音]") ||
-      String(lastUserMsg).includes("[文件]") ||
-      (session.lastMediaAt && nbot.now() - Number(session.lastMediaAt || 0) <= 15 * 1000);
+    const lastText = String(lastUserMsg || "");
+    const wantsImage = looksReferentialShortQuestion(lastText) || lastText.includes("[图片]") || /截图|图片/u.test(lastText);
+    const wantsVideo = lastText.includes("[视频]") || /视频|录屏/u.test(lastText);
+    const wantsAudio = lastText.includes("[语音]") || /语音|录音|听/u.test(lastText);
+    const recentImage = session.lastImageAt && nbot.now() - Number(session.lastImageAt || 0) <= 15 * 1000;
+    const recentMedia = session.lastMediaAt && nbot.now() - Number(session.lastMediaAt || 0) <= 15 * 1000;
+    const shouldAttachMedia = wantsImage || wantsVideo || wantsAudio || recentImage || recentMedia;
 
     if (shouldAttachMedia) {
       const imageUrls = getRelevantImageUrlsForSession(session, sessionKey)
         .filter((u) => /^https?:\/\//i.test(String(u || "")))
         .slice(0, 2);
-      const videoUrls = getRelevantVideoUrlsForSession(session, sessionKey).slice(0, 1);
-      const recordUrls = getRelevantRecordUrlsForSession(session, sessionKey).slice(0, 1);
-      const urls = [...imageUrls, ...videoUrls, ...recordUrls].filter(Boolean).slice(0, 4);
-      if (urls.length) {
-        const mm = buildMultimodalImageMessage(urls);
+      const videoUrls = getRelevantVideoUrlsForSession(session, sessionKey)
+        .filter((u) => /^https?:\/\//i.test(String(u || "")))
+        .slice(0, 1);
+      const recordUrls = getRelevantRecordUrlsForSession(session, sessionKey)
+        .filter((u) => /^https?:\/\//i.test(String(u || "")))
+        .slice(0, 1);
+
+      const attachments = [];
+      const maxAttachments = 2; // keep in sync with backend inliner limit
+
+      const pushIf = (kind, url) => {
+        if (!url || attachments.length >= maxAttachments) return;
+        attachments.push({ kind, url });
+      };
+
+      if (wantsAudio) pushIf("audio", recordUrls[0]);
+      if (wantsVideo) pushIf("video", videoUrls[0]);
+
+      // If user didn't explicitly ask, still attach the most recent media once (helps image/video-only follow-ups).
+      if (!wantsAudio && recentMedia) pushIf("audio", recordUrls[0]);
+      if (!wantsVideo && recentMedia) pushIf("video", videoUrls[0]);
+
+      if (wantsImage || recentImage || looksReferentialShortQuestion(lastText)) {
+        for (const u of imageUrls) {
+          pushIf("image", u);
+        }
+      }
+
+      // Backwards-compatible: if we only have images, keep the old helper.
+      if (attachments.length) {
+        const allImages = attachments.every((a) => String(a?.kind || "") === "image");
+        const mm = allImages
+          ? buildMultimodalImageMessage(attachments.map((a) => a.url))
+          : buildMultimodalAttachmentMessage(attachments);
         if (mm) messages.push(mm);
       }
     }
@@ -189,6 +219,8 @@ export function callReplyModel(session, sessionKey, config, useSearch = false) {
     noImageRetry: false,
     modelName: useSearch && config.enableWebsearch ? config.websearchModel : config.replyModel,
     maxTokens: config.replyMaxTokens ?? null,
+    userSeq: session ? Number(session.userSeq || 0) : 0,
+    lastUserAt: session ? Number(session.lastUserAt || 0) : 0,
   });
 
   if (useSearch && config.enableWebsearch) {
@@ -239,6 +271,8 @@ export function handleReplyResult(requestInfo, success, content) {
         noImageRetry: true,
         modelName: config.replyModel,
         maxTokens: config.replyMaxTokens ?? null,
+        userSeq: Number(session.userSeq || 0),
+        lastUserAt: Number(session.lastUserAt || 0),
       });
       const callOptions = { modelName: config.replyModel };
       if (config.replyMaxTokens) callOptions.maxTokens = config.replyMaxTokens;
@@ -246,9 +280,35 @@ export function handleReplyResult(requestInfo, success, content) {
       return;
     }
 
-    nbot.sendReply(session.userId, session.groupId || 0, "出错了，稍后再试。");
+    const shouldNotify = !!session.startedByMention || !!session.forceMentionNextReply;
+    if (shouldNotify) {
+      const at = session.groupId ? nbot.at(session.userId) : "";
+      const prefix = at ? `${at} ` : "";
+      nbot.sendReply(session.userId, session.groupId || 0, `${prefix}刚刚没拿到回复，再发一次关键信息？`);
+      session.forceMentionNextReply = false;
+      session.lastMentionAt = nbot.now();
+      session.lastBotReplyAt = nbot.now();
+      return;
+    }
+
+    // Auto-triggered session: silent fail to avoid spamming the group.
     endSession(sessionKey);
     return;
+  }
+
+  // If user sent more messages while the reply was in-flight, this reply is likely stale.
+  const now = nbot.now();
+  const userSeqAtCall = Number(requestInfo.userSeq || 0);
+  const hasQueuedFollowup = !!session.pendingUserInput || replyBatches.has(sessionKey);
+  if (hasQueuedFollowup && userSeqAtCall > 0 && Number(session.userSeq || 0) > userSeqAtCall) {
+    const latencyMs = now - Number(requestInfo.createdAt || now);
+    const dropMs = Number(config.staleReplyDropMs ?? 0);
+    if (Number.isFinite(dropMs) && dropMs > 0 && latencyMs >= dropMs) {
+      nbot.log.info(
+        `[smart-assist] dropped stale reply latencyMs=${latencyMs} userSeq=${session.userSeq}/${userSeqAtCall} rid=${String(requestInfo.requestId || "").slice(0, 48)}`
+      );
+      return;
+    }
   }
 
   // Add assistant reply to session
@@ -371,17 +431,33 @@ export function handleReplyResult(requestInfo, success, content) {
 
   // Send reply (hide counters; keep session limits internal)
   let prefix = "";
-  const shouldMention = !!session.groupId && (session.mentionUserOnEveryReply || session.mentionUserOnFirstReply);
+  const replyLatencyMs = now - Number(requestInfo.createdAt || now);
+  const sinceUserMs = session.lastUserAt ? now - Number(session.lastUserAt || 0) : replyLatencyMs;
+  const mentionCooldownMs = Number(config.mentionCooldownMs ?? 30_000);
+  const mentionOnSlowReplyMs = Number(config.mentionOnSlowReplyMs ?? 6_000);
+
+  const shouldMention =
+    !!session.groupId &&
+    (session.mentionUserOnEveryReply ||
+      session.mentionUserOnFirstReply ||
+      session.forceMentionNextReply ||
+      ((sinceUserMs >= mentionOnSlowReplyMs || replyLatencyMs >= mentionOnSlowReplyMs) &&
+        (!session.lastMentionAt || now - Number(session.lastMentionAt || 0) >= mentionCooldownMs)));
+
   if (shouldMention) {
     prefix = nbot.at(session.userId) ? `${nbot.at(session.userId)} ` : "";
     if (session.mentionUserOnFirstReply) {
       session.mentionUserOnFirstReply = false;
     }
+    session.forceMentionNextReply = false;
+    session.lastMentionAt = now;
   }
   finalParts.forEach((p, idx) => {
     const msg = idx === 0 ? `${prefix}${p}` : p;
     if (msg) nbot.sendReply(session.userId, session.groupId || 0, msg);
   });
+  session.lastBotReplyAt = now;
+  session.pendingUserInput = false;
 
   // Check if max turns reached (silent end; avoid spamming in QQ group)
   if (session.turnCount >= config.maxTurns) {
@@ -389,8 +465,5 @@ export function handleReplyResult(requestInfo, success, content) {
     return;
   }
 
-  // If user sent more messages while we were replying, immediately continue.
-  if (session.pendingUserInput && !pendingReplySessions.has(sessionKey)) {
-    callReplyModel(session, sessionKey, config, false);
-  }
+  // Follow-ups are handled by reply batching (driven by tick) to avoid burst spam.
 }

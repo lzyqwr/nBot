@@ -1,9 +1,9 @@
 {
   "id": "smart-assist",
   "name": "智能助手",
-  "version": "2.2.27",
+  "version": "2.2.28",
   "author": "nBot",
-  "description": "智能对话助手：自动监控群聊消息并识别求助场景（无需@；@会提高优先级），用 QQ 群友风格的一行短句给出下一步建议；支持引用最近图片/视频/语音等上下文。",
+  "description": "智能对话助手：自动监控群聊消息并识别求助场景（无需@；@会提高优先级），用 QQ 群友风格的一行短句给出下一步建议；支持跟进上下文多模态（图片/视频/语音）。",
   "type": "bot",
   "entry": "index.js",
   "codeType": "module",
@@ -22,6 +22,28 @@
       "itemType": null,
       "min": 1,
       "max": 30
+    },
+    {
+      "key": "reply_merge_seconds",
+      "type": "number",
+      "label": "回复合并窗口(秒)",
+      "description": "仅用于「回复模型」：会话中用户连续发送多条消息时，等待用户停顿后再回复一次，避免连发刷屏。",
+      "default": 1.2,
+      "options": null,
+      "itemType": null,
+      "min": 0,
+      "max": 5
+    },
+    {
+      "key": "reply_merge_max_seconds",
+      "type": "number",
+      "label": "回复最大等待(秒)",
+      "description": "当用户持续刷屏时，最多等待多久就必须回复一次（避免永远等不到停顿）。",
+      "default": 5,
+      "options": null,
+      "itemType": null,
+      "min": 1,
+      "max": 15
     },
     {
       "key": "decision_model",
@@ -156,19 +178,54 @@
       "max": null
     },
     {
+      "key": "mention_cooldown_seconds",
+      "type": "number",
+      "label": "@冷却时间(秒)",
+      "description": "两次@同一用户的最小间隔（避免过吵；慢回复时会按需@）。",
+      "default": 30,
+      "options": null,
+      "itemType": null,
+      "min": 0,
+      "max": 600
+    },
+    {
+      "key": "mention_on_slow_reply_seconds",
+      "type": "number",
+      "label": "慢回复时@阈值(秒)",
+      "description": "当回复距离用户发言/模型耗时超过该阈值时，会更倾向于@用户以避免回复失去指向性。",
+      "default": 6,
+      "options": null,
+      "itemType": null,
+      "min": 0,
+      "max": 60
+    },
+    {
       "key": "mention_user_on_every_reply",
       "type": "boolean",
       "label": "每条回复@用户",
       "description": "会话内每条回复是否@用户（更容易被看到，但更吵）。",
-      "default": true,
+      "default": false,
       "options": null,
       "itemType": null,
       "min": null,
       "max": null
+    },
+    {
+      "key": "stale_reply_drop_seconds",
+      "type": "number",
+      "label": "丢弃过期回复(秒)",
+      "description": "若用户在模型回复途中继续发消息，且模型耗时超过该阈值，则丢弃这条可能过期的回复，等待下一轮合并后再回。",
+      "default": 2.5,
+      "options": null,
+      "itemType": null,
+      "min": 0,
+      "max": 60
     }
   ],
   "config": {
     "decision_merge_seconds": 5,
+    "reply_merge_seconds": 1.2,
+    "reply_merge_max_seconds": 5,
     "decision_model": "default",
     "reply_model": "default",
     "websearch_model": "default",
@@ -181,6 +238,9 @@
     "context_message_count": 20,
     "always_reply_in_session": true,
     "mention_user_on_first_reply": true,
-    "mention_user_on_every_reply": true
+    "mention_cooldown_seconds": 30,
+    "mention_on_slow_reply_seconds": 6,
+    "mention_user_on_every_reply": false,
+    "stale_reply_drop_seconds": 2.5
   }
 }
