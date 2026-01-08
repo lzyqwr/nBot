@@ -5,17 +5,18 @@ export function getConfig() {
       ? cfg.interrupt_keywords
       : ["我明白了", "结束", "停止"];
 
-  // Some upstreams default to a very small max_tokens (e.g. 256). For models that spend tokens on hidden reasoning,
-  // this can truncate even tiny JSON outputs. Provide a safe default while allowing users to disable it by setting
-  // the value to null/0 in config (in practice we still keep a large default to avoid truncation).
-  const normalizeMaxTokens = (v, fallback) => {
-    const n = Number(v);
-    if (!Number.isFinite(n) || n <= 0) return Math.max(256, Math.min(8192, Math.floor(fallback)));
-    return Math.max(256, Math.min(8192, Math.floor(n)));
+  // Prefer prompt constraints over `max_tokens` caps; allow users to set an explicit value if desired.
+  const normalizeOptionalMaxTokens = (v) => {
+    if (v === null || v === undefined) return null;
+    const s = String(v).trim();
+    if (!s) return null;
+    const n = Number(s);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return Math.floor(n);
   };
-  const decisionMaxTokens = normalizeMaxTokens(cfg.decision_max_tokens ?? 2048, 2048);
-  const replyMaxTokens = normalizeMaxTokens(cfg.reply_max_tokens ?? 2048, 2048);
-  const replyRetryMaxTokens = normalizeMaxTokens(cfg.reply_retry_max_tokens ?? 1024, 1024);
+  const decisionMaxTokens = normalizeOptionalMaxTokens(cfg.decision_max_tokens);
+  const replyMaxTokens = normalizeOptionalMaxTokens(cfg.reply_max_tokens);
+  const replyRetryMaxTokens = normalizeOptionalMaxTokens(cfg.reply_retry_max_tokens);
 
   const mentionUserOnFirstReply = cfg.mention_user_on_first_reply !== false;
   const mentionUserOnEveryReply = cfg.mention_user_on_every_reply === true;
@@ -64,6 +65,10 @@ export function getConfig() {
       "- 禁止半句碎片（如“建议先/能/然后”）。",
       "- 语气自然像群友：别写长段落、别客服腔、别“为了更好地帮助你…”。",
       "- 最多问 1 个关键追问；否则直接给一个最可能有效的下一步。",
+      "- 只围绕用户的求助主线：不要把群里其他人的闲聊当作事实依据；上下文有多个话题时，只处理最后一个明确问题。",
+      "- 当方案会因「单人/进服/局域网联机」而不同且你不确定时，优先追问确认（例如：单人还是进服？）。",
+      "- 严禁强行猜测具体模组/服务端插件/文件名；只有当用户明确提到或日志/截图里出现关键词时，才可提到具体名字（如 AuthMe）。",
+      "- 涉及可能导致数据丢失的操作（删除/覆盖/重置存档或玩家数据/配置）必须先提示备份；优先建议“改名/复制/备份”这种可回滚操作；只有用户确认后才给删除步骤。",
       "- 禁止笼统套话（如“各有优缺点/取决于情况/看需求/因人而异”）。不确定就问 1 个能推进问题的关键点。",
       "- 禁止编造任何未在上文出现的事实（例如版本/整合包/服务器细节/群内信息）。不确定就问一句。",
       "- 不要复述/引用聊天记录内容（不要“某某: xxx”这种复读）；直接给结论或下一步。",
