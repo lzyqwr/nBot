@@ -170,25 +170,9 @@ export default {
         return true;
       }
 
-      // If user explicitly @ the bot, reply immediately (avoid strict JSON/router failures causing silence).
-      if (trigger.mentioned) {
-        const seed = llmMessage || message || "";
-        const s = createSession(sessionKey, user_id, group_id, seed, {
-          mentionUserOnFirstReply: config.mentionUserOnFirstReply,
-          mentionUserOnEveryReply: config.mentionUserOnEveryReply,
-          startedByMention: true,
-        });
-        if (replyCtx && replyCtx.snippet) {
-          s.lastReplySnippet = replyCtx.snippet;
-          s.lastReplyAt = nbot.now();
-        }
-        addMessageToSession(s, "user", seed, { mentioned: true });
-        nbot.log.info("[smart-assist] created new session (mentioned)");
-        scheduleReplyFlush(sessionKey, config);
-        return true;
-      }
-
-      const shouldCheck = checkCooldown(sessionKey, config.cooldownMs) && trigger.shouldCheck;
+      // Note: do not auto-reply on mention; still run through decision model to avoid the bot joining chat.
+      // Mentions bypass cooldown but are flushed urgently (no merge wait).
+      const shouldCheck = (trigger.mentioned || checkCooldown(sessionKey, config.cooldownMs)) && trigger.shouldCheck;
       if (shouldCheck) {
         // Store a sanitized copy for LLM so CQ segments don't mislead the decision model.
         // Still keep the boolean mentioned flag from the real message segments.

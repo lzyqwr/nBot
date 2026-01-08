@@ -20,7 +20,8 @@ export function getConfig() {
 
   const mentionUserOnFirstReply = cfg.mention_user_on_first_reply !== false;
   const mentionUserOnEveryReply = cfg.mention_user_on_every_reply === true;
-  const alwaysReplyInSession = cfg.always_reply_in_session !== false;
+  // Default: don't reply to every user turn in-session; still keep session state so screenshots/logs can be followed up.
+  const alwaysReplyInSession = cfg.always_reply_in_session === true;
   const decisionSystemPrompt =
     cfg.decision_system_prompt ||
     [
