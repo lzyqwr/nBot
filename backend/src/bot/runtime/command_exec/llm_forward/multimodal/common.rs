@@ -719,16 +719,32 @@ pub(in super::super::super) async fn call_chat_completions(
 
         // Debug suspiciously short outputs: print a compact preview of the raw response (redacted).
         let trimmed = content.trim();
-        if trimmed.chars().count() <= 6 && text.len() > 200 {
-            let finish_reason = v
-                .get("choices")
-                .and_then(|c| c.get(0))
-                .and_then(|c| c.get("finish_reason"))
-                .and_then(|f| f.as_str())
-                .unwrap_or("");
+        let finish_reason = v
+            .get("choices")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("finish_reason"))
+            .and_then(|f| f.as_str())
+            .unwrap_or("");
+        let model = v.get("model").and_then(|m| m.as_str()).unwrap_or("");
+        let trimmed_len = trimmed.chars().count();
+
+        // Some gateways occasionally return truncated assistant content (e.g. half JSON) with 200 OK.
+        // Log the raw upstream response to diagnose whether this is an LLM formatting issue or upstream truncation.
+        if trimmed.starts_with('{') && !trimmed.ends_with('}') {
+            warn!(
+                "LLM possibly truncated JSON content (finish_reason={} model={} content_len={}): content_preview={} raw={}",
+                finish_reason,
+                model,
+                trimmed_len,
+                compact_for_log(trimmed, 240),
+                compact_for_log(&text, 900)
+            );
+        }
+
+        if trimmed_len <= 6 && text.len() > 200 {
             warn!(
                 "LLM short content (len={} finish_reason={}): raw={}",
-                trimmed.chars().count(),
+                trimmed_len,
                 finish_reason,
                 compact_for_log(&text, 700)
             );
