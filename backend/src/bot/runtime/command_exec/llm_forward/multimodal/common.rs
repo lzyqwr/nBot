@@ -3,7 +3,9 @@ use futures_util::StreamExt;
 use serde_json::json;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::sleep;
 use tracing::{error, info, warn};
 
@@ -70,6 +72,33 @@ impl std::fmt::Display for LlmCallError {
             LlmCallError::MissingContent => write!(f, "分析失败：无法获取回复内容"),
         }
     }
+}
+
+static LLM_HTTP_CONCURRENCY: OnceLock<Arc<Semaphore>> = OnceLock::new();
+
+fn llm_http_concurrency_limit() -> usize {
+    std::env::var("NBOT_LLM_MAX_CONCURRENCY")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .map(|n| n.clamp(1, 32))
+        .unwrap_or(1)
+}
+
+fn llm_http_semaphore() -> Arc<Semaphore> {
+    LLM_HTTP_CONCURRENCY
+        .get_or_init(|| {
+            let n = llm_http_concurrency_limit();
+            info!("LLM max concurrency: {}", n);
+            Arc::new(Semaphore::new(n))
+        })
+        .clone()
+}
+
+async fn acquire_llm_http_permit() -> Result<OwnedSemaphorePermit, LlmCallError> {
+    llm_http_semaphore()
+        .acquire_owned()
+        .await
+        .map_err(|_| LlmCallError::Transport("LLM 并发控制失败".to_string()))
 }
 
 fn parse_retry_after_seconds_from_message(message: &str) -> Option<u64> {
@@ -606,18 +635,31 @@ pub(in super::super::super) async fn call_chat_completions(
     let max_attempts: usize = 3;
 
     for attempt in 0..max_attempts {
-        let resp = match client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", api_key))
-            .header("Content-Type", "application/json")
-            .body(request_bytes.clone())
-            .timeout(timeout)
-            .send()
-            .await
-        {
-            Ok(resp) => resp,
-            Err(e) => {
-                let err = LlmCallError::Transport(e.to_string());
+        let attempt_result: Result<(reqwest::StatusCode, reqwest::header::HeaderMap, String), LlmCallError> =
+            {
+                let _permit = acquire_llm_http_permit().await?;
+                let resp = client
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {}", api_key))
+                    .header("Content-Type", "application/json")
+                    .body(request_bytes.clone())
+                    .timeout(timeout)
+                    .send()
+                    .await
+                    .map_err(|e| LlmCallError::Transport(e.to_string()))?;
+
+                let status = resp.status();
+                let headers = resp.headers().clone();
+                let text = resp
+                    .text()
+                    .await
+                    .map_err(|e| LlmCallError::Decode(e.to_string()))?;
+                Ok((status, headers, text))
+            };
+
+        let (status, headers, text) = match attempt_result {
+            Ok(v) => v,
+            Err(err) => {
                 if attempt + 1 >= max_attempts {
                     return Err(err);
                 }
@@ -629,13 +671,6 @@ pub(in super::super::super) async fn call_chat_completions(
                 continue;
             }
         };
-
-        let status = resp.status();
-        let headers = resp.headers().clone();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| LlmCallError::Decode(e.to_string()))?;
 
         if !status.is_success() {
             let msg = serde_json::from_str::<serde_json::Value>(&text)
@@ -845,18 +880,31 @@ pub(in super::super::super) async fn call_chat_completions_with_tavily(
     let max_attempts: usize = 3;
 
     for attempt in 0..max_attempts {
-        let resp = match client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", api_key))
-            .header("Content-Type", "application/json")
-            .body(request_bytes.clone())
-            .timeout(timeout)
-            .send()
-            .await
-        {
-            Ok(resp) => resp,
-            Err(e) => {
-                let err = LlmCallError::Transport(e.to_string());
+        let attempt_result: Result<(reqwest::StatusCode, reqwest::header::HeaderMap, String), LlmCallError> =
+            {
+                let _permit = acquire_llm_http_permit().await?;
+                let resp = client
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {}", api_key))
+                    .header("Content-Type", "application/json")
+                    .body(request_bytes.clone())
+                    .timeout(timeout)
+                    .send()
+                    .await
+                    .map_err(|e| LlmCallError::Transport(e.to_string()))?;
+
+                let status = resp.status();
+                let headers = resp.headers().clone();
+                let text = resp
+                    .text()
+                    .await
+                    .map_err(|e| LlmCallError::Decode(e.to_string()))?;
+                Ok((status, headers, text))
+            };
+
+        let (status, headers, text) = match attempt_result {
+            Ok(v) => v,
+            Err(err) => {
                 if attempt + 1 >= max_attempts {
                     return Err(err);
                 }
@@ -868,13 +916,6 @@ pub(in super::super::super) async fn call_chat_completions_with_tavily(
                 continue;
             }
         };
-
-        let status = resp.status();
-        let headers = resp.headers().clone();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| LlmCallError::Decode(e.to_string()))?;
 
         if !status.is_success() {
             let msg = serde_json::from_str::<serde_json::Value>(&text)
@@ -981,18 +1022,31 @@ async fn call_with_tavily_tool_loop(
         let mut ok_text: Option<String> = None;
 
         for attempt in 0..max_attempts {
-            let resp = match client
-                .post(url)
-                .header("Authorization", format!("Bearer {}", api_key))
-                .header("Content-Type", "application/json")
-                .body(request_bytes.clone())
-                .timeout(timeout)
-                .send()
-                .await
-            {
-                Ok(resp) => resp,
-                Err(e) => {
-                    let err = LlmCallError::Transport(e.to_string());
+            let attempt_result: Result<(reqwest::StatusCode, reqwest::header::HeaderMap, String), LlmCallError> =
+                {
+                    let _permit = acquire_llm_http_permit().await?;
+                    let resp = client
+                        .post(url)
+                        .header("Authorization", format!("Bearer {}", api_key))
+                        .header("Content-Type", "application/json")
+                        .body(request_bytes.clone())
+                        .timeout(timeout)
+                        .send()
+                        .await
+                        .map_err(|e| LlmCallError::Transport(e.to_string()))?;
+
+                    let status = resp.status();
+                    let headers = resp.headers().clone();
+                    let text = resp
+                        .text()
+                        .await
+                        .map_err(|e| LlmCallError::Decode(e.to_string()))?;
+                    Ok((status, headers, text))
+                };
+
+            let (status, headers, text) = match attempt_result {
+                Ok(v) => v,
+                Err(err) => {
                     if attempt + 1 >= max_attempts {
                         return Err(err);
                     }
@@ -1004,13 +1058,6 @@ async fn call_with_tavily_tool_loop(
                     continue;
                 }
             };
-
-            let status = resp.status();
-            let headers = resp.headers().clone();
-            let text = resp
-                .text()
-                .await
-                .map_err(|e| LlmCallError::Decode(e.to_string()))?;
 
             if !status.is_success() {
                 let msg = serde_json::from_str::<serde_json::Value>(&text)
@@ -1211,20 +1258,26 @@ pub(super) async fn call_audio_transcription(
 
     let client = reqwest::Client::new();
     let url = format!("{}/audio/transcriptions", base_url.trim_end_matches('/'));
-    let resp = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .multipart(form)
-        .timeout(std::time::Duration::from_secs(300))
-        .send()
-        .await
-        .map_err(|e| format!("音频转写请求失败: {}", e))?;
+    let (status, text) = {
+        let _permit = acquire_llm_http_permit()
+            .await
+            .map_err(|e| format!("音频转写并发控制失败: {e}"))?;
+        let resp = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .multipart(form)
+            .timeout(std::time::Duration::from_secs(300))
+            .send()
+            .await
+            .map_err(|e| format!("音频转写请求失败: {}", e))?;
 
-    let status = resp.status();
-    let text = resp
-        .text()
-        .await
-        .map_err(|e| format!("读取转写响应失败: {}", e))?;
+        let status = resp.status();
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| format!("读取转写响应失败: {}", e))?;
+        (status, text)
+    };
 
     if !status.is_success() {
         let msg = serde_json::from_str::<serde_json::Value>(&text)

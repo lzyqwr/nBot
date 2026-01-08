@@ -1,0 +1,234 @@
+import { getConfig } from "../config.js";
+import { callReplyModel } from "../reply/reply.js";
+import { sanitizeMessageForLlm } from "../message.js";
+import { decisionBatches, pendingDecisionSessions, pendingReplySessions, sessions } from "../state.js";
+import { checkCooldown, createSession, addMessageToSession } from "../session.js";
+import { maskSensitiveForLog } from "../utils/log.js";
+import { scheduleDecisionFlush } from "./batch.js";
+import { callDecisionModel } from "./decision_model.js";
+
+// Handle decision result
+export function handleDecisionResult(requestInfo, success, content) {
+  const { sessionKey, userId, groupId, message, mentioned, items, groupContext } = requestInfo;
+  const config = getConfig();
+  pendingDecisionSessions.delete(sessionKey);
+
+  function parseDecision(raw) {
+    const text = String(raw || "").trim();
+    if (!text) {
+      return { action: "IGNORE", confidence: 0, reason: "", useSearch: false, topic: "", needClarify: false };
+    }
+
+    const direct = text.toUpperCase();
+    if (direct === "YES" || direct === "NO") {
+      return {
+        action: direct === "YES" ? "REPLY" : "IGNORE",
+        confidence: 1,
+        reason: "direct",
+        useSearch: false,
+        topic: "",
+        needClarify: false,
+      };
+    }
+
+    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    const candidate = (fenced ? fenced[1] : text).trim();
+
+    const tryParseJson = (s) => {
+      if (!s) return null;
+      const t = String(s).trim();
+      if (!(t.startsWith("{") && t.endsWith("}"))) return null;
+      try {
+        const obj = JSON.parse(t);
+        const actionRaw = String(obj.action || obj.router_action || obj.mode || "").trim().toUpperCase();
+        const decision = String(obj.decision || obj.answer || "").trim().toUpperCase();
+        const confidence = Number(obj.confidence);
+        const reason = String(obj.reason || "").trim();
+        const useSearchRaw = obj.use_search ?? obj.useSearch ?? obj.search ?? obj.use_websearch;
+        const useSearch = useSearchRaw === true || String(useSearchRaw || "").toLowerCase() === "true";
+        const topic = String(obj.topic || "").trim();
+        const needClarifyRaw = obj.need_clarify ?? obj.needClarify ?? obj.clarify;
+        const needClarify =
+          needClarifyRaw === true || String(needClarifyRaw || "").toLowerCase() === "true";
+
+        const action =
+          actionRaw === "REPLY" || actionRaw === "IGNORE" || actionRaw === "REACT"
+            ? actionRaw
+            : decision === "YES"
+              ? "REPLY"
+              : decision === "NO"
+                ? "IGNORE"
+                : "IGNORE";
+        return {
+          action,
+          confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0,
+          reason,
+          useSearch,
+          topic,
+          needClarify,
+        };
+      } catch {
+        return null;
+      }
+    };
+
+    // 1) strict JSON (or fenced JSON)
+    const parsedDirect = tryParseJson(candidate);
+    if (parsedDirect) return parsedDirect;
+
+    // 2) tolerant extraction: find first {...} in the output
+    const first = candidate.indexOf("{");
+    const last = candidate.lastIndexOf("}");
+    if (first !== -1 && last !== -1 && last > first) {
+      const maybe = candidate.slice(first, last + 1);
+      const parsed = tryParseJson(maybe);
+      if (parsed) return parsed;
+    }
+
+    // 3) heuristic fallback: accept obvious YES/NO tokens when the model didn't follow format
+    const m = candidate.match(/\b(YES|NO)\b/i);
+    if (m && m[1]) {
+      const token = String(m[1]).toUpperCase();
+      return {
+        action: token === "YES" ? "REPLY" : "IGNORE",
+        confidence: 0.9,
+        reason: "heuristic_token",
+        useSearch: false,
+        topic: "",
+        needClarify: false,
+      };
+    }
+    const m2 = candidate.match(/decision\s*[:=]\s*(yes|no)/i);
+    if (m2 && m2[1]) {
+      const token = String(m2[1]).toUpperCase();
+      return {
+        action: token === "YES" ? "REPLY" : "IGNORE",
+        confidence: 0.9,
+        reason: "heuristic_decision",
+        useSearch: false,
+        topic: "",
+        needClarify: false,
+      };
+    }
+
+    // Strict mode: any other non-JSON response is treated as NO (avoid false positives).
+    nbot.log.warn(
+      `[smart-assist] decision parse failed mentioned=${mentioned ? "Y" : "N"} raw=${maskSensitiveForLog(text).slice(0, 220)}`
+    );
+    return { action: "IGNORE", confidence: 0, reason: "non_json", useSearch: false, topic: "", needClarify: false };
+  }
+
+  if (!success) {
+    nbot.log.warn(`Decision model call failed: ${content}`);
+    const batch = decisionBatches.get(sessionKey);
+    if (batch && batch.items.length) {
+      const urgent = batch.items.some((x) => !!x?.mentioned);
+      scheduleDecisionFlush(sessionKey, urgent, config);
+    }
+    return;
+  }
+
+  const existing = sessions.get(sessionKey);
+  const parsed = parseDecision(content);
+
+  const needsFormatRetry =
+    (parsed.reason === "non_json" || String(parsed.reason || "").startsWith("heuristic_")) && !requestInfo.formatRetry;
+
+  // If the model didn't follow the strict JSON format (including plain YES/NO), retry once with a stronger instruction.
+  if (needsFormatRetry) {
+    const stronger = [
+      config.decisionSystemPrompt,
+      "",
+      "你上一条输出不符合格式。再次强调：只允许输出单行 JSON，且必须以 { 开头、以 } 结尾；除此之外禁止任何字符。",
+      "禁止输出 YES/NO/OK/好的 等单词；如果你想表达“要/不要介入”，也必须写进 JSON 的 action 字段。",
+      "示例：{\"action\":\"IGNORE\",\"confidence\":0.0,\"reason\":\"不确定\",\"use_search\":false,\"topic\":\"\",\"need_clarify\":false}",
+    ].join("\n");
+
+    nbot.log.info(
+      `[smart-assist] decision format retry reason=${parsed.reason || "-"} rid=${String(requestInfo.requestId || "").slice(0, 48)}`
+    );
+    callDecisionModel(
+      sessionKey,
+      userId,
+      groupId,
+      message,
+      mentioned,
+      items,
+      config,
+      groupContext || null,
+      { formatRetry: true, decisionSystemPromptOverride: stronger }
+    );
+    return;
+  }
+
+  const action = parsed.action || "IGNORE";
+  const shouldReply = action === "REPLY";
+
+  nbot.log.info(
+    `[smart-assist] action=${action} conf=${parsed.confidence.toFixed(2)} reply=${shouldReply ? "Y" : "N"} mentioned=${mentioned ? "Y" : "N"} search=${parsed.useSearch ? "Y" : "N"} clarify=${parsed.needClarify ? "Y" : "N"} reason=${parsed.reason || "-"} rid=${String(requestInfo.requestId || "").slice(0, 48)} text=${maskSensitiveForLog(sanitizeMessageForLlm(String(message || ""), null)).slice(0, 80)}`
+  );
+
+  if (!shouldReply) {
+    const batch = decisionBatches.get(sessionKey);
+    if (batch && batch.items.length) {
+      const urgent = batch.items.some((x) => !!x?.mentioned);
+      scheduleDecisionFlush(sessionKey, urgent, config);
+    }
+    return;
+  }
+
+  // If a session already exists, only reply when the decision model says YES.
+  // This makes the assistant feel more like a human in QQ group chats (not every turn must reply).
+  if (existing && existing.state === "active") {
+    if (!pendingReplySessions.has(sessionKey)) {
+      callReplyModel(existing, sessionKey, config, parsed.useSearch);
+    }
+    return;
+  }
+
+  // Check cooldown (from last session cleanup)
+  if (!checkCooldown(sessionKey, config.cooldownMs)) {
+    nbot.log.info("[smart-assist] skipped: cooldown");
+    return;
+  }
+
+  const seedItems =
+    Array.isArray(items) && items.length
+      ? items.map((x) => String(x?.text ?? ""))
+      : message
+        ? [sanitizeMessageForLlm(message, null)]
+        : [];
+
+  // Create new session
+  const session = createSession(sessionKey, userId, groupId, seedItems[0] || message || "", {
+    mentionUserOnFirstReply: !!mentioned,
+  });
+  session.groupContext = groupContext || null;
+
+  const replySnippetFromBatch = Array.isArray(items)
+    ? items.map((x) => String(x?.replySnippet || "")).find((s) => !!s.trim())
+    : "";
+  if (replySnippetFromBatch) {
+    session.lastReplySnippet = replySnippetFromBatch;
+    session.lastReplyAt = nbot.now();
+  }
+
+  for (const t of seedItems) {
+    addMessageToSession(session, "user", sanitizeMessageForLlm(t, null) || t);
+  }
+
+  // If user sent more messages while we were deciding, include them before reply.
+  const batch = decisionBatches.get(sessionKey);
+  if (batch && batch.items.length) {
+    const extra = batch.items.splice(0, batch.items.length);
+    for (const x of extra) {
+      addMessageToSession(session, "user", sanitizeMessageForLlm(String(x?.text ?? ""), null));
+    }
+  }
+
+  nbot.log.info("[smart-assist] created new session");
+
+  // Start assisting immediately
+  callReplyModel(session, sessionKey, config, parsed.useSearch);
+}
+
