@@ -1,4 +1,4 @@
-import { DECISION_MAX_TOKENS, getConfig } from "../config.js";
+import { getConfig } from "../config.js";
 import { buildRecentGroupSnippet } from "../media.js";
 import { isMentioningBot, summarizeMentions } from "../message.js";
 import {
@@ -78,7 +78,6 @@ export function callDecisionModel(
     formatRetry: !!options.formatRetry,
     createdAt: nbot.now(),
     modelName: config.decisionModel,
-    maxTokens: DECISION_MAX_TOKENS,
   });
 
   // Build context-aware prompt
@@ -151,7 +150,6 @@ export function callDecisionModel(
 
   nbot.callLlmChat(requestId, messages, {
     modelName: config.decisionModel,
-    maxTokens: DECISION_MAX_TOKENS,
   });
 }
 

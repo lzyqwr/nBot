@@ -1,9 +1,3 @@
-// Decision output must be strict JSON; some "reasoning" models can spend most tokens on hidden reasoning and
-// truncate the visible JSON with `finish_reason=length` when max_tokens is too small.
-export const DECISION_MAX_TOKENS = 1024;
-export const REPLY_MAX_TOKENS = 1024;
-export const REPLY_RETRY_MAX_TOKENS = 256;
-
 export function getConfig() {
   const cfg = nbot.getConfig();
   const interruptKeywords =
@@ -16,6 +10,7 @@ export function getConfig() {
       "你是 QQ 群聊里的「路由器（Router）」：你不负责输出回复内容，只负责决定机器人要不要介入、以及需不需要联网搜索。",
       "",
       "重要：要非常保守，避免误触发。",
+      "- 你的帮助范围仅限：Minecraft/PCL 启动器/Java/模组/服务器/常见软件报错排查；硬件选购/配电脑/主板内存/价格闲聊等一律 action=IGNORE。",
       "- 只要像玩笑/吐槽/阴阳怪气/反讽/自问自答/口头禅、或没有明确问题与需求，一律 action=IGNORE。",
       "- 被 @ 机器人只是“优先级更高”的信号，仍然可以 action=IGNORE。",
       "- 没有 @ 机器人时：除非用户明显是在向全群求助/提问（期待任何人回答），否则一律 action=IGNORE。不要抢别人的对话。",
@@ -29,6 +24,7 @@ export function getConfig() {
       "你必须输出严格 JSON（不要 Markdown、不要解释文本），字段如下：",
       '{"action":"IGNORE|REPLY|REACT","confidence":0.0,"reason":"<=20字中文","use_search":true|false,"topic":"<=12字中文","need_clarify":true|false}',
       "输出必须为【单行 JSON】，且必须以 { 开头、以 } 结尾；除此之外禁止任何字符；confidence 取 0~1。",
+      "尽量输出最短 JSON：reason/topic 允许为空字符串；不要添加额外字段。",
       "action 说明：IGNORE=不介入；REPLY=需要机器人回一句；REACT=仅表情/已读式回应（如果不确定请用 IGNORE）。",
       "use_search 说明：只有当需要查询公开资料/最新信息/外部知识时才为 true；纯群内问题/本地报错排查/需要对方补充信息时为 false。",
       "",

@@ -1,4 +1,4 @@
-import { REPLY_MAX_TOKENS, REPLY_RETRY_MAX_TOKENS, getConfig } from "../config.js";
+import { getConfig } from "../config.js";
 import {
   buildMultimodalImageMessage,
   getRelevantImageUrlsForSession,
@@ -185,19 +185,16 @@ export function callReplyModel(session, sessionKey, config, useSearch = false) {
     usedImages,
     noImageRetry: false,
     modelName: useSearch && config.enableWebsearch ? config.websearchModel : config.replyModel,
-    maxTokens: REPLY_MAX_TOKENS,
   });
 
   if (useSearch && config.enableWebsearch) {
     nbot.callLlmChatWithSearch(requestId, messages, {
       modelName: config.websearchModel,
-      maxTokens: REPLY_MAX_TOKENS,
       enableSearch: true,
     });
   } else {
     nbot.callLlmChat(requestId, messages, {
       modelName: config.replyModel,
-      maxTokens: REPLY_MAX_TOKENS,
     });
   }
 }
@@ -220,7 +217,7 @@ export function handleReplyResult(requestInfo, success, content) {
   const hasControl = /[\u0000-\u001F\u007F]/.test(raw);
   if (hasControl || rawLen <= 12) {
     nbot.log.warn(
-      `[smart-assist] reply_raw len=${rawLen} ctl=${hasControl ? "Y" : "N"} usedImages=${requestInfo.usedImages ? "Y" : "N"} model=${requestInfo.modelName || "-"} maxTok=${requestInfo.maxTokens || "-"} rid=${String(requestInfo.requestId || "").slice(0, 48)} raw=${escapeForLog(raw, 500)}`
+      `[smart-assist] reply_raw len=${rawLen} ctl=${hasControl ? "Y" : "N"} usedImages=${requestInfo.usedImages ? "Y" : "N"} model=${requestInfo.modelName || "-"} rid=${String(requestInfo.requestId || "").slice(0, 48)} raw=${escapeForLog(raw, 500)}`
     );
   }
 
@@ -238,11 +235,9 @@ export function handleReplyResult(requestInfo, success, content) {
         usedImages: false,
         noImageRetry: true,
         modelName: config.replyModel,
-        maxTokens: REPLY_MAX_TOKENS,
       });
       nbot.callLlmChat(requestId, retryMessages, {
         modelName: config.replyModel,
-        maxTokens: REPLY_MAX_TOKENS,
       });
       return;
     }
@@ -272,7 +267,6 @@ export function handleReplyResult(requestInfo, success, content) {
       sessionKey,
       createdAt: nbot.now(),
       modelName: config.replyModel,
-      maxTokens: REPLY_RETRY_MAX_TOKENS,
     });
 
     const retryMessages = [
@@ -287,7 +281,6 @@ export function handleReplyResult(requestInfo, success, content) {
 
     nbot.callLlmChat(requestId, retryMessages, {
       modelName: config.replyModel,
-      maxTokens: REPLY_RETRY_MAX_TOKENS,
     });
     return;
   }
@@ -303,7 +296,6 @@ export function handleReplyResult(requestInfo, success, content) {
       sessionKey,
       createdAt: nbot.now(),
       modelName: config.replyModel,
-      maxTokens: REPLY_RETRY_MAX_TOKENS,
       compactRetry: true,
     });
 
@@ -319,7 +311,6 @@ export function handleReplyResult(requestInfo, success, content) {
 
     nbot.callLlmChat(requestId, retryMessages, {
       modelName: config.replyModel,
-      maxTokens: REPLY_RETRY_MAX_TOKENS,
     });
     return;
   }
@@ -339,7 +330,6 @@ export function handleReplyResult(requestInfo, success, content) {
         sessionKey,
         createdAt: nbot.now(),
         modelName: config.replyModel,
-        maxTokens: REPLY_RETRY_MAX_TOKENS,
         fragmentRetry: true,
       });
 
@@ -355,7 +345,6 @@ export function handleReplyResult(requestInfo, success, content) {
 
       nbot.callLlmChat(requestId, retryMessages, {
         modelName: config.replyModel,
-        maxTokens: REPLY_RETRY_MAX_TOKENS,
       });
       return;
     }
@@ -390,4 +379,3 @@ export function handleReplyResult(requestInfo, success, content) {
     return;
   }
 }
-
