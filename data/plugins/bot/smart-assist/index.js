@@ -1,5 +1,5 @@
 /**
- * nBot Smart Assistant Plugin v2.2.28
+ * nBot Smart Assistant Plugin v2.2.29
  * Auto-detects if user needs help, enters multi-turn conversation mode,
  * replies in a QQ-friendly style (short, low-noise)
  */
@@ -37,7 +37,7 @@ import { containsKeyword } from "./utils/text.js";
 
 export default {
   onEnable() {
-    nbot.log.info("Smart Assistant Plugin v2.2.28 enabled");
+    nbot.log.info("Smart Assistant Plugin v2.2.29 enabled");
   },
 
   onDisable() {
@@ -78,6 +78,7 @@ export default {
       const session = sessions.get(sessionKey);
       const message = raw_message || "";
       const llmMessage = sanitizeMessageForLlm(message, ctx);
+      const selfId = ctx.self_id !== undefined && ctx.self_id !== null ? String(ctx.self_id) : "";
       const mentions = summarizeMentions(ctx);
       const imageUrls = extractImageUrlsFromCtx(ctx);
       const videoUrls = extractVideoUrlsFromCtx(ctx);
@@ -139,6 +140,18 @@ export default {
           return true;
         }
 
+        // Session follow-up: media (screenshots/logs/audio/video) is almost always a crucial update.
+        // Prefer being responsive here instead of letting the decision model over-filter it as "someone else already helped".
+        const hasMedia = !!(imageUrls.length || videoUrls.length || recordUrls.length);
+        const repliedToBot = !!replyCtx?.replyToBot;
+        if (hasMedia || repliedToBot) {
+          if (pendingReplySessions.has(sessionKey)) {
+            session.pendingUserInput = true;
+          }
+          scheduleReplyFlush(sessionKey, config);
+          return true;
+        }
+
         // Fallback: Let the decision model decide whether we should reply to this new message.
         const trigger = getDecisionTrigger(ctx, message, config);
         let batch = decisionBatches.get(sessionKey);
@@ -148,6 +161,7 @@ export default {
         }
         batch.userId = user_id;
         batch.groupId = group_id;
+        batch.selfId = selfId || batch.selfId || "";
         batch.items.push({
           t: nbot.now(),
           text: sanitizeMessageForLlm(message, ctx),
@@ -183,6 +197,7 @@ export default {
         }
         batch.userId = user_id;
         batch.groupId = group_id;
+        batch.selfId = selfId || batch.selfId || "";
         batch.items.push({
           t: nbot.now(),
           text: sanitizeMessageForLlm(message, ctx),

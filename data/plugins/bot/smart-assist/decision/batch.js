@@ -26,6 +26,7 @@ function buildDecisionPayload(sessionKey) {
   return {
     userId: batch.userId,
     groupId: batch.groupId,
+    selfId: batch.selfId || "",
     mentioned: mentionedAny,
     merged,
     items,
@@ -39,12 +40,14 @@ function restoreDecisionPayload(sessionKey, payload) {
     batch = {
       userId: payload.userId,
       groupId: payload.groupId,
+      selfId: payload.selfId || "",
       items: [],
     };
     decisionBatches.set(sessionKey, batch);
   }
   batch.userId = payload.userId;
   batch.groupId = payload.groupId;
+  batch.selfId = payload.selfId || batch.selfId || "";
   if (Array.isArray(payload.items) && payload.items.length) {
     batch.items = [...payload.items, ...batch.items];
   }
@@ -81,7 +84,8 @@ export function flushDecisionBatch(sessionKey, config) {
       payload.merged,
       payload.mentioned,
       payload.items,
-      config
+      config,
+      payload.selfId
     );
   } else {
     callDecisionModel(
@@ -114,4 +118,3 @@ export function flushDueDecisionBatches(config) {
     flushDecisionBatch(sessionKey, config);
   }
 }
-

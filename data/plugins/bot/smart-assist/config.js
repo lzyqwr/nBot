@@ -14,9 +14,11 @@ export function getConfig() {
     if (!Number.isFinite(n) || n <= 0) return null;
     return Math.floor(n);
   };
-  const decisionMaxTokens = normalizeOptionalMaxTokens(cfg.decision_max_tokens);
-  const replyMaxTokens = normalizeOptionalMaxTokens(cfg.reply_max_tokens);
-  const replyRetryMaxTokens = normalizeOptionalMaxTokens(cfg.reply_retry_max_tokens);
+  // Note: if unset, some upstream gateways default to a small max_tokens which can truncate strict JSON.
+  // Use a generous internal default; prompts still require short outputs.
+  const decisionMaxTokens = normalizeOptionalMaxTokens(cfg.decision_max_tokens) ?? 1024;
+  const replyMaxTokens = normalizeOptionalMaxTokens(cfg.reply_max_tokens) ?? 1024;
+  const replyRetryMaxTokens = normalizeOptionalMaxTokens(cfg.reply_retry_max_tokens) ?? 512;
 
   const mentionUserOnFirstReply = cfg.mention_user_on_first_reply !== false;
   const mentionUserOnEveryReply = cfg.mention_user_on_every_reply === true;
@@ -33,9 +35,11 @@ export function getConfig() {
       "- 被 @ 机器人只是“优先级更高”的信号，仍然可以 action=IGNORE。",
       "- 没有 @ 机器人时：除非用户明显是在向全群求助/提问（期待任何人回答），否则一律 action=IGNORE。不要抢别人的对话。",
       "- 如果候选消息是【回复别人】的跟帖（例如带有“（回复内容：...）”），且没有 @ 机器人：通常是在接别人话，一律 action=IGNORE（机器人不要插嘴）。",
-      "- 如果【最近群聊片段】里已经有人给出明确答案/解决步骤/指路（例如“群文件/看公告/看置顶/去某某页面”），通常 action=IGNORE（机器人不要抢答/复读）。",
+      "- 如果【不在会话中】且【最近群聊片段】里已经有人给出明确答案/解决步骤/指路（例如“群文件/看公告/看置顶/去某某页面”），通常 action=IGNORE（机器人不要抢答/复读）。",
       "- 起哄/调戏/让机器人叫称呼/要机器人表白/刷屏/群聊闲聊，通常 action=IGNORE。",
       "- 只有媒体/占位符（如“[图片] / [视频] / [语音] / [卡片]”）且没有任何文字内容：如果【不在会话中】一律 action=IGNORE；如果【处于会话中】且用户明显在补充截图/报错，可 action=REPLY（need_clarify 可为 true）。",
+      "- 关键：如果【处于会话中：是】，说明机器人已经在跟进该用户的同一问题。此时用户补充截图/日志/回答追问，通常必须 action=REPLY；不要因为“已有群友在提供帮助/已经有人回答”就 IGNORE（包括机器人自己先前的消息）。",
+      "- 会话中允许忽略的情况：用户明确表示结束/放弃/道谢/告别/纯闲聊/无意义应答，或明显换了新话题。",
       "- 只有表情/颜文字/一个词/无意义应答（如“哈哈”“？”“。。。”）一律 action=IGNORE。",
       "- 用户在 @ 其他人（而不是 @ 机器人）时，通常是在找那个人说话：除非明确要求机器人回答，否则 action=IGNORE。",
       "",

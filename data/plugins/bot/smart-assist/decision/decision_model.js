@@ -12,6 +12,39 @@ import {
 } from "../state.js";
 import { stripAllCqSegments, stripLeadingCqSegments } from "../utils/text.js";
 
+function looksLikeInScopeHelpRequest(text) {
+  const raw = String(text || "");
+  const t = stripAllCqSegments(raw).toLowerCase();
+  if (!t) return false;
+
+  // Fast allow-list for the assistant's scope (avoid running the LLM router on generic chat).
+  const keywordHits = [
+    "minecraft",
+    "我的世界",
+    "mc",
+    "pcl",
+    "java",
+    "forge",
+    "fabric",
+    "mod",
+    "lwjgl",
+    "crash",
+    "exception",
+    "stack",
+    "error",
+    "log.txt",
+    "crash-reports",
+  ].some((k) => t.includes(k));
+  if (keywordHits) return true;
+
+  // Common Chinese troubleshooting patterns.
+  if (/(?:报错|错误|崩溃|闪退|卡死|无响应|打不开|开不了|启动不了|启动器|进不去|连不上|日志|存档|模组|整合包|服务端|服务器)/u.test(raw)) {
+    return true;
+  }
+
+  return false;
+}
+
 export function getDecisionTrigger(ctx, message, config) {
   const empty = { shouldCheck: false, mentioned: false, urgent: false };
   if (!config.autoTrigger) return empty;
@@ -25,13 +58,13 @@ export function getDecisionTrigger(ctx, message, config) {
 
   const mentions = summarizeMentions(ctx);
   const mentioned = mentions.bot || isMentioningBot(ctx);
-  // Delegate the trigger decision to the LLM: always check (merged in 5s window to reduce cost).
-  const shouldCheck = true;
+  // Only run the router LLM on likely in-scope help requests (or explicit mentions).
+  const shouldCheck = mentioned || looksLikeInScopeHelpRequest(t);
   return { shouldCheck, mentioned, urgent: mentioned };
 }
 
 // Fetch group context (announcements and recent messages)
-export function fetchGroupContext(sessionKey, userId, groupId, message, mentioned, items, config) {
+export function fetchGroupContext(sessionKey, userId, groupId, message, mentioned, items, config, selfId = "") {
   const requestId = genRequestId("context");
   pendingGroupInfoRequests.set(requestId, {
     type: "context",
@@ -41,6 +74,7 @@ export function fetchGroupContext(sessionKey, userId, groupId, message, mentione
     message,
     mentioned: !!mentioned,
     items: Array.isArray(items) ? items : [],
+    selfId: selfId !== undefined && selfId !== null ? String(selfId) : "",
     createdAt: nbot.now(),
     step: "notice", // Start with fetching notice
     notice: null,
@@ -184,6 +218,7 @@ export function handleGroupInfoResponse(requestInfo, infoType, success, data) {
     const groupContext = {
       notice: requestInfo.notice,
       history: requestInfo.history,
+      selfId: requestInfo.selfId || "",
     };
 
     // Now call decision model with context

@@ -168,6 +168,7 @@ export function looksReferentialShortQuestion(text) {
 export function buildRecentGroupSnippet(groupContext, limit = 15) {
   if (!groupContext || !Array.isArray(groupContext.history) || groupContext.history.length === 0) return "";
   const maxLines = Number.isFinite(limit) ? Math.max(3, Math.min(100, Math.floor(limit))) : 15;
+  const selfId = groupContext.selfId !== undefined && groupContext.selfId !== null ? String(groupContext.selfId) : "";
 
   const lines = [];
   const slice = groupContext.history.slice(0, maxLines).slice();
@@ -178,6 +179,10 @@ export function buildRecentGroupSnippet(groupContext, limit = 15) {
   const maxChars = 6000;
   for (const m of slice) {
     const sender = m?.sender || {};
+    const senderId = sender?.user_id !== undefined && sender?.user_id !== null ? String(sender.user_id) : "";
+    // Exclude the bot's own messages from the recent snippet to avoid confusing the router LLM.
+    // (Group card/nickname may look like a real user; selfId is the only reliable signal.)
+    if (selfId && senderId && senderId === selfId) continue;
     const name = String(sender.card || sender.nickname || "群友").replace(/\s+/g, " ").trim() || "群友";
     const content = sanitizeMessageForLlm(String(m?.raw_message || ""), null);
     if (!content) continue;
