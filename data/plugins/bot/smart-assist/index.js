@@ -1,5 +1,5 @@
 /**
- * nBot Smart Assistant Plugin v2.2.29
+ * nBot Smart Assistant Plugin v2.2.30
  * Auto-detects if user needs help, enters multi-turn conversation mode,
  * replies in a QQ-friendly style (short, low-noise)
  */
@@ -37,7 +37,7 @@ import { containsKeyword } from "./utils/text.js";
 
 export default {
   onEnable() {
-    nbot.log.info("Smart Assistant Plugin v2.2.29 enabled");
+    nbot.log.info("Smart Assistant Plugin v2.2.30 enabled");
   },
 
   onDisable() {
@@ -140,11 +140,11 @@ export default {
           return true;
         }
 
-        // Session follow-up: media (screenshots/logs/audio/video) is almost always a crucial update.
-        // Prefer being responsive here instead of letting the decision model over-filter it as "someone else already helped".
+        // Session follow-up: reply-thread is a strong signal the user is talking to the bot.
         const hasMedia = !!(imageUrls.length || videoUrls.length || recordUrls.length);
+        const hasFile = String(llmMessage || message).includes("[文件]") || /\[CQ:file[,\]]/i.test(String(message || ""));
         const repliedToBot = !!replyCtx?.replyToBot;
-        if (hasMedia || repliedToBot) {
+        if (repliedToBot) {
           if (pendingReplySessions.has(sessionKey)) {
             session.pendingUserInput = true;
           }
@@ -173,7 +173,9 @@ export default {
           imageUrls,
           replySnippet: replyCtx ? replyCtx.snippet : "",
         });
-        scheduleDecisionFlush(sessionKey, trigger.urgent, config);
+        // Media updates should be handled promptly, but still go through the router to avoid redundant follow-ups
+        // when another plugin (e.g. log analyzer) is already processing the same case.
+        scheduleDecisionFlush(sessionKey, !!(trigger.urgent || hasMedia || hasFile), config);
         return true;
       }
 

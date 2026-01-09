@@ -199,6 +199,11 @@ export function handleDecisionResult(requestInfo, success, content) {
   // If a session already exists, only reply when the decision model says YES.
   // This makes the assistant feel more like a human in QQ group chats (not every turn must reply).
   if (existing && existing.state === "active") {
+    // Refresh group context for the reply model so it can see what happened in the group
+    // (e.g. other plugins already analyzed a file) and avoid redundant follow-ups.
+    if (groupContext) {
+      existing.groupContext = groupContext;
+    }
     if (!pendingReplySessions.has(sessionKey)) {
       callReplyModel(existing, sessionKey, config, parsed.useSearch);
     }

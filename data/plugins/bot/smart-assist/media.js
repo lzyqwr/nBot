@@ -171,6 +171,8 @@ export function buildRecentGroupSnippet(groupContext, limit = 15) {
   const selfId = groupContext.selfId !== undefined && groupContext.selfId !== null ? String(groupContext.selfId) : "";
 
   const lines = [];
+  let selfLines = 0;
+  const maxSelfLines = Math.min(4, Math.max(1, Math.floor(maxLines / 3)));
   const slice = groupContext.history.slice(0, maxLines).slice();
   const timed = slice.filter((m) => Number.isFinite(Number(m?.time))).length;
   if (timed >= Math.ceil(slice.length / 2)) {
@@ -180,10 +182,16 @@ export function buildRecentGroupSnippet(groupContext, limit = 15) {
   for (const m of slice) {
     const sender = m?.sender || {};
     const senderId = sender?.user_id !== undefined && sender?.user_id !== null ? String(sender.user_id) : "";
-    // Exclude the bot's own messages from the recent snippet to avoid confusing the router LLM.
-    // (Group card/nickname may look like a real user; selfId is the only reliable signal.)
-    if (selfId && senderId && senderId === selfId) continue;
-    const name = String(sender.card || sender.nickname || "群友").replace(/\s+/g, " ").trim() || "群友";
+    const isSelf = !!(selfId && senderId && senderId === selfId);
+    // Keep a few bot messages to avoid redundant follow-ups (other plugins may already be handling the case),
+    // but label them clearly and cap the count to avoid drowning out real user context.
+    if (isSelf) {
+      if (selfLines >= maxSelfLines) continue;
+      selfLines += 1;
+    }
+    const name = isSelf
+      ? "机器人"
+      : String(sender.card || sender.nickname || "群友").replace(/\s+/g, " ").trim() || "群友";
     const content = sanitizeMessageForLlm(String(m?.raw_message || ""), null);
     if (!content) continue;
     const line = `${name}: ${content.slice(0, 120)}`;

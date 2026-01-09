@@ -146,72 +146,6 @@ function isArchiveFile(name) {
   return ARCHIVE_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
 
-function stripCq(text) {
-  return String(text || "")
-    .replace(/\[CQ:[^\]]+\]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function looksLikeHelpRequestText(rawMessage) {
-  const t = stripCq(rawMessage);
-  if (!t) return false;
-  if (t.startsWith("/")) return false;
-  return /(?:报错|错误|崩溃|闪退|卡死|无响应|打不开|开不了|启动|进不去|日志|crash|exception|stack|pcl|minecraft|java|forge|fabric|mod)/iu.test(
-    t
-  );
-}
-
-function looksLikeKnownLogFileName(name) {
-  const lower = String(name || "").trim().toLowerCase();
-  if (!lower) return false;
-  const base = lower.split(/[\\/]/).pop() || lower;
-  if (base === "latest.log") return true;
-  if (base === "debug.log") return true;
-  if (base === "log.txt") return true; // PCL 常见
-  if (/^hs_err_pid\d+\.log$/i.test(base)) return true;
-  if (/^crash-[^\\/]*\.txt$/i.test(base)) return true;
-  return false;
-}
-
-function isWeakAutoKeyword(keyword) {
-  const k = String(keyword || "").trim().toLowerCase();
-  // These are too generic; require additional context if they are the only match.
-  return k === "txt" || k === "log";
-}
-
-function shouldAutoTriggerFile(ctx, target, config) {
-  if (!config.auto_trigger) return false;
-  if (!target || target.type !== "file") return false;
-
-  const fileName = String(target.name || "").trim();
-  const lower = fileName.toLowerCase();
-  const isText = isTextFile(lower);
-  const isArchive = isArchiveFile(lower);
-  if (!isText && !isArchive) return false;
-
-  const repliedToBot = !!(ctx && ctx.reply_message && ctx.reply_message.sender_is_bot === true);
-  const mentionedBot = !!(ctx && ctx.at_bot === true);
-  const helpHint = looksLikeHelpRequestText(ctx && ctx.raw_message);
-
-  // Strong, well-known log names should trigger even without extra context.
-  if (looksLikeKnownLogFileName(fileName)) return true;
-
-  if (isArchive) {
-    const match = matchKeywordsOrdered(fileName, config.archive_keywords);
-    if (!match.matched) return false;
-    if (!isWeakAutoKeyword(match.keyword)) return true;
-    // For archives, allow weak matches only when user explicitly asks / replies / @.
-    return repliedToBot || mentionedBot || helpHint;
-  }
-
-  const match = matchKeywordsOrdered(fileName, config.text_file_keywords);
-  if (!match.matched) return false;
-  if (!isWeakAutoKeyword(match.keyword)) return true;
-  // Avoid false positives like random *.txt.
-  return repliedToBot || mentionedBot || helpHint;
-}
-
 function matchKeywordsOrdered(name, keywords) {
   const lower = String(name || "").toLowerCase();
   if (!lower) return { matched: false, keyword: "" };
@@ -1120,11 +1054,25 @@ return {
     const gid = group_id || 0;
     const key = buildSessionKey(user_id, gid);
 
-    if (config.auto_trigger) {
+  if (config.auto_trigger) {
       const autoTarget = extractTargetFromCtx(ctx);
-      if (shouldAutoTriggerFile(ctx, autoTarget, config)) {
-        handleFileTarget(user_id, gid, autoTarget, config);
-        return true;
+      if (autoTarget && autoTarget.type === "file") {
+        const fileName = autoTarget.name || "";
+        const lower = String(fileName || "").toLowerCase();
+        const isText = isTextFile(lower);
+        const isArchive = isArchiveFile(lower);
+        const matchResult = isText
+          ? matchKeywordsOrdered(fileName, config.text_file_keywords)
+          : isArchive
+            ? matchKeywordsOrdered(fileName, config.archive_keywords).matched
+              ? matchKeywordsOrdered(fileName, config.archive_keywords)
+              : matchKeywordsOrdered(fileName, config.text_file_keywords)
+            : { matched: false };
+
+        if (matchResult.matched) {
+          handleFileTarget(user_id, gid, autoTarget, config);
+          return true;
+        }
       }
     }
 
@@ -1194,7 +1142,19 @@ return {
       return true;
     }
 
-    if (!shouldAutoTriggerFile(ctx, target, config)) {
+    const fileName = target.name || "";
+    const lower = String(fileName || "").toLowerCase();
+    const isText = isTextFile(lower);
+    const isArchive = isArchiveFile(lower);
+    const matchResult = isText
+      ? matchKeywordsOrdered(fileName, config.text_file_keywords)
+      : isArchive
+        ? matchKeywordsOrdered(fileName, config.archive_keywords).matched
+          ? matchKeywordsOrdered(fileName, config.archive_keywords)
+          : matchKeywordsOrdered(fileName, config.text_file_keywords)
+        : { matched: false };
+
+    if (!matchResult.matched) {
       return true;
     }
 

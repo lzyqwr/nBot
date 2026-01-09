@@ -2,6 +2,7 @@ import { getConfig } from "../config.js";
 import {
   buildMultimodalAttachmentMessage,
   buildMultimodalImageMessage,
+  buildRecentGroupSnippet,
   getRelevantImageUrlsForSession,
   getRelevantRecordUrlsForSession,
   getRelevantVideoUrlsForSession,
@@ -142,6 +143,14 @@ function buildReplyMessages(session, sessionKey, config, attachImages) {
     messages.push({
       role: "system",
       content: `以下是该用户在本群最近发言的原文（截断），仅用于理解语境；禁止推断任何未出现的事实，也不要输出任何 QQ 号/ID：\n\n${contextInfo}`,
+    });
+  }
+
+  const groupSnippet = buildRecentGroupSnippet(session.groupContext, Math.min(config.contextMessageCount, 20));
+  if (groupSnippet) {
+    messages.push({
+      role: "system",
+      content: `以下为最近群聊片段（含机器人消息），仅用于避免重复追问/判断是否已有结论；不要复读：\n\n${groupSnippet}`,
     });
   }
 
