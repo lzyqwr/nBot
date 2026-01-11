@@ -75,7 +75,8 @@ impl PluginRuntime {
                 self.plugin_root.to_string_lossy()
             ));
         }
-        Ok(path)
+        path.canonicalize()
+            .map_err(|e| format!("Invalid entry path: {} ({})", path.to_string_lossy(), e))
     }
 
     pub async fn load_plugin(&mut self, entry: &str, code_type: PluginCodeType) -> Result<(), String> {
